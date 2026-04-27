@@ -1,0 +1,1615 @@
+From 68a151760b3c56375b7234524be6f509b0681137 Mon Sep 17 00:00:00 2001
+From: "suricata.lu" <suricata.lu@gmail.com>
+Date: Tue, 14 Apr 2026 14:09:20 +0800
+Subject: [PATCH 1/2] imx8mp_evk: Port ECU-150v2 board support to U-Boot
+ 2025.04
+
+- defconfig: disable TCPC/Video, simplify BOOTCOMMAND, add SYSINFO/SMBIOS
+- header: ECU DRAM layout (4GB default), EEPROM MAC defines
+- env: uEnv.txt support, emmcboot, fatload->load, remove jh_clk
+- board code: GPIO board ID, power-on sequence, EEPROM MAC in board_late_init
+- DTS: strip EVK peripherals (HDMI/audio/PCIe/DSP), keep ECU hw only
+- DTSI: strip display nodes, ECU USB host mode, model ECU150V2
+
+Upstream-Status: Inappropriate [embedded board port]
+---
+ arch/arm/dts/imx8mp-evk-u-boot.dtsi           | 134 +--
+ board/freescale/imx8mp_evk/imx8mp_evk.c       | 217 ++++-
+ board/freescale/imx8mp_evk/imx8mp_evk.env     |  41 +-
+ configs/imx8mp_evk_defconfig                  |  14 +-
+ .../src/arm64/freescale/imx8mp-evk.dts        | 775 ++----------------
+ include/configs/imx8mp_evk.h                  |  24 +-
+ 6 files changed, 337 insertions(+), 868 deletions(-)
+
+diff --git a/arch/arm/dts/imx8mp-evk-u-boot.dtsi b/arch/arm/dts/imx8mp-evk-u-boot.dtsi
+index 6136424f5c7..4f238818f83 100644
+--- a/arch/arm/dts/imx8mp-evk-u-boot.dtsi
++++ b/arch/arm/dts/imx8mp-evk-u-boot.dtsi
+@@ -7,7 +7,7 @@
+ #include "imx8mp-u-boot.dtsi"
+ 
+ / {
+-	model = "NXP i.MX8MPlus LPDDR4 EVK board";
++	model = "NXP i.MX8MPlus LPDDR4 ECU150V2 board";
+ 
+ 	chosen {
+ 		bootargs = "console=ttymxc1,115200 earlycon=ec_imx6q,0x30890000,115200";
+@@ -19,34 +19,6 @@
+ 		bootph-pre-ram;
+ 	};
+ 
+-	/delete-node/ hdmi-connector;
+-
+-	dsi_host: dsi-host {
+-		compatible = "samsung,sec-mipi-dsi";
+-		status = "okay";
+-	};
+-
+-	rm67199_panel {
+-		compatible = "raydium,rm67199";
+-		pinctrl-names = "default";
+-		pinctrl-0 = <&pinctrl_mipi_dsi_en>;
+-		reset-gpio = <&gpio1 8 GPIO_ACTIVE_LOW>;
+-		dsi-lanes = <4>;
+-		video-mode = <2>;	/* 0: burst mode
+-					 * 1: non-burst mode with sync event
+-					 * 2: non-burst mode with sync pulse
+-					 */
+-		panel-width-mm = <68>;
+-		panel-height-mm = <121>;
+-		status = "okay";
+-
+-		port {
+-			rm67191_from_dsim: endpoint {
+-				remote-endpoint = <&dsim_to_rm67191>;
+-			};
+-		};
+-	};
+-
+ 	mcu_rdc {
+ 		compatible = "imx8m,mcu_rdc";
+ 			    /* rdc config when MCU starts
+@@ -95,16 +67,6 @@
+ 	};
+ };
+ 
+-&{/gpio-leds} {
+-	/delete-node/ status;
+-
+-	led-0 {
+-		label = "yellow:status";
+-		gpios = <&gpio3 16 GPIO_ACTIVE_HIGH>;
+-		default-state = "on";
+-	};
+-};
+-
+ &pinctrl_i2c1 {
+ 	bootph-all;
+ };
+@@ -188,31 +150,6 @@
+ 	scl-gpios = <&gpio5 16 GPIO_ACTIVE_HIGH>;
+ 	sda-gpios = <&gpio5 17 GPIO_ACTIVE_HIGH>;
+ 	bootph-pre-ram;
+-
+-	/delete-node/ hdmi@3d;
+-
+-	adv_bridge: adv7535@3d {
+-		compatible = "adi,adv7535";
+-		reg = <0x3d>;
+-		adi,addr-cec = <0x3c>;
+-		adi,dsi-lanes = <4>;
+-		status = "okay";
+-
+-		port {
+-			adv7535_from_dsim: endpoint {
+-				remote-endpoint = <&dsim_to_adv7535>;
+-			};
+-		};
+-	};
+-};
+-
+-&i2c3 {
+-	clock-frequency = <100000>;
+-	pinctrl-names = "default", "gpio";
+-	pinctrl-1 = <&pinctrl_i2c3_gpio>;
+-	scl-gpios = <&gpio5 18 GPIO_ACTIVE_HIGH>;
+-	sda-gpios = <&gpio5 19 GPIO_ACTIVE_HIGH>;
+-	bootph-pre-ram;
+ };
+ 
+ &usdhc1 {
+@@ -260,19 +197,6 @@
+ 	assigned-clock-parents = <&clk IMX8MP_SYS_PLL1_400M>;
+ };
+ 
+-&media_blk_ctrl {
+-	assigned-clocks = <&clk IMX8MP_CLK_MEDIA_AXI>,
+-				  <&clk IMX8MP_CLK_MEDIA_APB>,
+-				  <&clk IMX8MP_CLK_MEDIA_DISP1_PIX>,
+-				  <&clk IMX8MP_CLK_MEDIA_DISP2_PIX>,
+-				  <&clk IMX8MP_VIDEO_PLL1>;
+-	assigned-clock-parents = <&clk IMX8MP_SYS_PLL2_1000M>,
+-				 <&clk IMX8MP_SYS_PLL1_800M>,
+-				 <&clk IMX8MP_VIDEO_PLL1_OUT>,
+-				 <&clk IMX8MP_VIDEO_PLL1_OUT>;
+-	assigned-clock-rates = <500000000>, <200000000>;
+-};
+-
+ &usb_dwc3_0 {
+ 	compatible = "fsl,imx8mq-dwc3", "snps,dwc3";
+ 	assigned-clocks = <&clk IMX8MP_CLK_HSIO_AXI>;
+@@ -282,39 +206,11 @@
+ 
+ &usb_dwc3_1 {
+ 	compatible = "fsl,imx8mq-dwc3", "snps,dwc3";
+-	pinctrl-names = "default", "gpio";
+-	pinctrl-1 = <&pinctrl_usb1_vbus_gpio>;
+ 	assigned-clocks = <&clk IMX8MP_CLK_HSIO_AXI>;
+ 	assigned-clock-parents = <&clk IMX8MP_SYS_PLL1_800M>;
+ 	assigned-clock-rates = <400000000>;
+ };
+ 
+-&lcdif3 {
+-	status = "disabled";
+-};
+-
+-&mipi_dsi {
+-	/delete-property/ assigned-clocks;
+-	/delete-property/ assigned-clock-parents;
+-	/delete-property/ assigned-clock-rates;
+-
+-	ports {
+-		/delete-node/ port@1;
+-
+-		port@1 {
+-			dsim_to_adv7535: endpoint {
+-				remote-endpoint = <&adv7535_from_dsim>;
+-			};
+-		};
+-
+-		port@2 {
+-			dsim_to_rm67191: endpoint {
+-				remote-endpoint = <&rm67191_from_dsim>;
+-			};
+-		};
+-	};
+-};
+-
+ &usb3_phy0 {
+ 	fsl,phy-tx-vref-tune = <0xe>;
+ 	fsl,phy-tx-preemp-amp-tune = <3>;
+@@ -330,24 +226,11 @@
+ };
+ 
+ &usb_dwc3_0 {
+-	dr_mode = "otg";
+-	hnp-disable;
+-	srp-disable;
+-	adp-disable;
+-	usb-role-switch;
+-	role-switch-default-mode = "none";
+-	snps,dis-u1-entry-quirk;
+-	snps,dis-u2-entry-quirk;
++	dr_mode = "host";
+ 	status = "okay";
+ };
+ 
+ &iomuxc {
+-	pinctrl_mipi_dsi_en: mipidsiengrp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_GPIO1_IO08__GPIO1_IO08	0x16
+-		>;
+-	};
+-
+ 	pinctrl_i2c1_gpio: i2c1gpiogrp {
+ 		fsl,pins = <
+ 			MX8MP_IOMUXC_I2C1_SCL__GPIO5_IO14        	0x1c3
+@@ -361,19 +244,6 @@
+ 			MX8MP_IOMUXC_I2C2_SDA__GPIO5_IO17        	0x1c3
+ 		>;
+ 	};
+-
+-	pinctrl_i2c3_gpio: i2c3gpiogrp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_I2C3_SCL__GPIO5_IO18        	0x1c3
+-			MX8MP_IOMUXC_I2C3_SDA__GPIO5_IO19        	0x1c3
+-		>;
+-	};
+-
+-	pinctrl_usb1_vbus_gpio: usb1gpiogrp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_GPIO1_IO14__GPIO1_IO14        	0x10
+-		>;
+-	};
+ };
+ 
+ &pinctrl_i2c1_gpio {
+diff --git a/board/freescale/imx8mp_evk/imx8mp_evk.c b/board/freescale/imx8mp_evk/imx8mp_evk.c
+index 294049ff9d2..306c8377edd 100644
+--- a/board/freescale/imx8mp_evk/imx8mp_evk.c
++++ b/board/freescale/imx8mp_evk/imx8mp_evk.c
+@@ -29,11 +29,12 @@
+ #include <dm/uclass-internal.h>
+ #include <dm/pinctrl.h>
+ #include <fuse.h>
++#include <i2c.h>
+ #include <mmc.h>
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+-#define UART_PAD_CTRL	(PAD_CTL_DSE6 | PAD_CTL_FSEL1)
++#define UART_PAD_CTRL	(PAD_CTL_DSE6 | PAD_CTL_FSEL1 | PAD_CTL_PUE)
+ #define WDOG_PAD_CTRL	(PAD_CTL_DSE6 | PAD_CTL_ODE | PAD_CTL_PUE | PAD_CTL_PE)
+ 
+ static iomux_v3_cfg_t const uart_pads[] = {
+@@ -70,6 +71,98 @@ struct efi_capsule_update_info update_info = {
+ 
+ #endif /* EFI_HAVE_CAPSULE_SUPPORT */
+ 
++/* ========== ECU-150v2: Board ID GPIO Detection ========== */
++#define BOARD_ID_GPIO_1		IMX_GPIO_NR(2, 8)  /* USB1_RSV_ID 4G: 0 / 2G: 0 */
++#define BOARD_ID_GPIO_0		IMX_GPIO_NR(2, 9)  /* USB2_RSV_ID     0 /     1 */
++
++static unsigned long imx8m_gpio_ports[] = {
++	[0] = GPIO1_BASE_ADDR,
++	[1] = GPIO2_BASE_ADDR,
++	[2] = GPIO3_BASE_ADDR,
++	[3] = GPIO4_BASE_ADDR,
++	[4] = GPIO5_BASE_ADDR,
++};
++
++static int gpio_direction_input_legacy(unsigned int gpio)
++{
++	unsigned int port;
++	struct gpio_regs *regs;
++	u32 l;
++
++	port = gpio / 32;
++	gpio &= 0x1f;
++
++	regs = (struct gpio_regs *)imx8m_gpio_ports[port];
++
++	l = readl(&regs->gpio_dir);
++	l &= ~(1 << gpio);
++	writel(l, &regs->gpio_dir);
++
++	return 0;
++}
++
++static int gpio_get_value_legacy(unsigned int gpio)
++{
++	unsigned int port;
++	struct gpio_regs *regs;
++	u32 val;
++
++	port = gpio / 32;
++	gpio &= 0x1f;
++
++	regs = (struct gpio_regs *)imx8m_gpio_ports[port];
++
++	val = (readl(&regs->gpio_dr) >> gpio) & 0x01;
++
++	return val;
++}
++
++int get_board_id(void)
++{
++	int i = 0, value = 0;
++	int baseboard_id;
++	int pin[2];
++
++	pin[0] = BOARD_ID_GPIO_0;
++	pin[1] = BOARD_ID_GPIO_1;
++
++	baseboard_id = 0;
++	for (i = 0; i < 2; i++) {
++		gpio_direction_input_legacy(pin[i]);
++		value = gpio_get_value_legacy(pin[i]);
++		if (value < 0) {
++			printf("Error! Read gpio port: %d failed!\n", pin[i]);
++			return -1;
++		}
++		baseboard_id |= ((value & 0x01) << i);
++	}
++
++	return baseboard_id;
++}
++
++int board_phys_sdram_size(phys_size_t *memsize)
++{
++	u32 board_id;
++
++	board_id = get_board_id();
++	switch (board_id) {
++	case 0: /* 4G */
++		*memsize = 0x100000000;
++		break;
++	case 1: /* 2G */
++		*memsize = 0x80000000;
++		break;
++	case 2: /* 6G */
++		*memsize = 0x180000000;
++		break;
++	default:
++		*memsize = 0x80000000;
++		break;
++	}
++
++	return 0;
++}
++
+ int board_early_init_f(void)
+ {
+ 	struct wdog_regs *wdog = (struct wdog_regs *)WDOG1_BASE_ADDR;
+@@ -506,6 +599,118 @@ int board_init(void)
+ 	return 0;
+ }
+ 
++/* ========== ECU-150v2: GPIO Helper ========== */
++static int gpio_set_output(unsigned int gpio, int value)
++{
++	char name[16];
++
++	memset(name, 0, sizeof(name));
++	sprintf(name, "gpio_%d", gpio);
++	gpio_request(gpio, name);
++	gpio_direction_output(gpio, value);
++	gpio_free(gpio);
++
++	return 0;
++}
++
++/* ========== ECU-150v2: Power Sequence ========== */
++#define DEVICE_RESET_DELAY		100 /* 100ms */
++
++#define COM_POWER_EN			IMX_GPIO_NR(5, 1)
++#define M2B_POWER_EN			IMX_GPIO_NR(1, 5)
++#define M2E_POWER_EN			IMX_GPIO_NR(1, 9)
++#define HDMI_POWER_EN			IMX_GPIO_NR(5, 0)
++
++#define NIC0_RESET_GPIO			IMX_GPIO_NR(4, 22)
++#define NIC1_RESET_GPIO			IMX_GPIO_NR(4, 2)
++#define M2B_PERST_GPIO			IMX_GPIO_NR(1, 7)
++#define M2B_RESET_GPIO			IMX_GPIO_NR(4, 29)
++#define M2B_PWR_OFF_GPIO		IMX_GPIO_NR(1, 6)
++#define M2B_W_DISABLE1_GPIO		IMX_GPIO_NR(3, 6)
++#define M2B_W_DISABLE2_GPIO		IMX_GPIO_NR(3, 7)
++
++#define M2E_W_DISABLE1_GPIO		IMX_GPIO_NR(1, 11)
++#define M2E_W_DISABLE2_GPIO		IMX_GPIO_NR(1, 12)
++
++static void system_power_on(void)
++{
++	gpio_set_output(COM_POWER_EN, 1);
++	gpio_set_output(M2B_POWER_EN, 1);
++	gpio_set_output(M2E_POWER_EN, 1);
++	gpio_set_output(HDMI_POWER_EN, 1);
++
++	gpio_set_output(M2E_W_DISABLE1_GPIO, 1);
++	gpio_set_output(M2E_W_DISABLE2_GPIO, 1);
++
++	gpio_set_output(M2B_PWR_OFF_GPIO, 1);
++	gpio_set_output(M2B_W_DISABLE1_GPIO, 1);
++	gpio_set_output(M2B_W_DISABLE2_GPIO, 1);
++
++	mdelay(10);
++}
++
++static void system_reset_gpio(void)
++{
++	gpio_set_output(M2B_PERST_GPIO, 0);
++	gpio_set_output(M2B_RESET_GPIO, 0);
++
++	mdelay(DEVICE_RESET_DELAY);
++
++	gpio_set_output(M2B_PERST_GPIO, 1);
++	gpio_set_output(M2B_RESET_GPIO, 1);
++}
++
++/* ========== ECU-150v2: EEPROM MAC Address ========== */
++static int ecu_setup_mac_from_eeprom(void)
++{
++	struct udevice *bus, *chip;
++	u8 mac[6];
++	int ret, fail = 0;
++
++	ret = uclass_get_device_by_seq(UCLASS_I2C, EEPROM_I2C_BUS, &bus);
++	if (ret) {
++		printf("ECU-150v2: EEPROM I2C bus %d not found (err %d)\n",
++		       EEPROM_I2C_BUS, ret);
++		return ret;
++	}
++	ret = i2c_get_chip(bus, EEPROM_I2C_ADDR, 1, &chip);
++	if (ret) {
++		printf("ECU-150v2: EEPROM chip 0x%02x not found (err %d)\n",
++		       EEPROM_I2C_ADDR, ret);
++		return ret;
++	}
++
++	/* eth0 (eQOS) */
++	ret = dm_i2c_read(chip, EEPROM_MAC_OFFSET_ETH0, mac, EEPROM_MAC_LENGTH);
++	if (ret) {
++		printf("ECU-150v2: EEPROM read eth0 MAC @0x%02x failed (err %d)\n",
++		       EEPROM_MAC_OFFSET_ETH0, ret);
++		fail++;
++	} else if (!is_valid_ethaddr(mac)) {
++		printf("ECU-150v2: EEPROM eth0 MAC invalid (%pM), need to burn\n",
++		       mac);
++		fail++;
++	} else {
++		eth_env_set_enetaddr("ethaddr", mac);
++	}
++
++	/* eth1 (FEC) */
++	ret = dm_i2c_read(chip, EEPROM_MAC_OFFSET_ETH1, mac, EEPROM_MAC_LENGTH);
++	if (ret) {
++		printf("ECU-150v2: EEPROM read eth1 MAC @0x%02x failed (err %d)\n",
++		       EEPROM_MAC_OFFSET_ETH1, ret);
++		fail++;
++	} else if (!is_valid_ethaddr(mac)) {
++		printf("ECU-150v2: EEPROM eth1 MAC invalid (%pM), need to burn\n",
++		       mac);
++		fail++;
++	} else {
++		eth_env_set_enetaddr("eth1addr", mac);
++	}
++
++	return fail ? -EINVAL : 0;
++}
++
+ int board_late_init(void)
+ {
+ #if CONFIG_IS_ENABLED(ENV_IS_IN_MMC)
+@@ -513,10 +718,18 @@ int board_late_init(void)
+ #endif
+ 
+ #ifdef CONFIG_ENV_VARS_UBOOT_RUNTIME_CONFIG
+-	env_set("board_name", "EVK");
++	env_set("board_name", "ECU150V2");
+ 	env_set("board_rev", "iMX8MP");
+ #endif
+ 
++	if (ecu_setup_mac_from_eeprom())
++		puts("ECU-150v2: WARNING - using random MAC, please burn EEPROM\n");
++	system_power_on();
++	system_reset_gpio();
++
++	puts("DeviceName is ECU150V2.\n");
++	env_set("devicename", "ecu150v2");
++
+ 	return 0;
+ }
+ 
+diff --git a/board/freescale/imx8mp_evk/imx8mp_evk.env b/board/freescale/imx8mp_evk/imx8mp_evk.env
+index 25bd2b39a8f..97f9eb52b25 100644
+--- a/board/freescale/imx8mp_evk/imx8mp_evk.env
++++ b/board/freescale/imx8mp_evk/imx8mp_evk.env
+@@ -64,12 +64,23 @@ mmcpart=1
+ mmcroot=/dev/mmcblk1p2 rootwait rw
+ mmcautodetect=yes
+ scriptaddr=0x43500000
+-mmcargs=setenv bootargs ${jh_clk} ${mcore_clk} console=${console} root=${mmcroot}
++mmcargs=setenv bootargs console=${console} ${mcore_clk} ${optargs} root=${mmcroot}
+ prepare_mcore=setenv mcore_clk clk-imx8mp.mcore_booted
++
++/* ===== ECU-150v2: Support uEnv.txt ===== */
++bootenvfile=uEnv.txt
++importbootenv=echo Importing environment from mmc${mmcdev} ...;
++        env import -t ${loadaddr} ${filesize}
++loadbootenv=load mmc ${mmcdev} ${loadaddr} ${bootenvfile}
++
+ kernel_addr_r=CONFIG_SYS_LOAD_ADDR
+-loadimage=fatload mmc ${mmcdev}:${mmcpart} ${loadaddr} ${image}
+-loadfdt=fatload mmc ${mmcdev}:${mmcpart} ${fdt_addr_r} ${fdtfile}
++loadimage=load mmc ${mmcdev}:${mmcpart} ${loadaddr} ${image}
++loadfdt=load mmc ${mmcdev}:${mmcpart} ${fdt_addr_r} ${fdtfile}
+ mmcboot=echo Booting from mmc ...;
++	if run loadbootenv; then
++		echo Loaded env from ${bootenvfile};
++		run importbootenv;
++	fi;
+ 	run mmcargs;
+ 	if test ${boot_fit} = yes || test ${boot_fit} = try; then
+ 		bootm ${loadaddr};
+@@ -80,6 +91,20 @@ mmcboot=echo Booting from mmc ...;
+ 			echo WARN: Cannot load the DT;
+ 		fi;
+ 	fi;
++emmcboot=echo Booting from emmc ...;
++	setenv mmcdev 0;
++	setenv mmcroot /dev/mmcblk0p2 rootwait rw;
++	if run loadbootenv; then
++		echo Loaded env from ${bootenvfile};
++		run importbootenv;
++	fi;
++	run mmcargs;
++	mmc dev ${mmcdev};
++	if run loadimage; then
++		if run loadfdt; then
++			booti ${loadaddr} - ${fdt_addr_r};
++		fi;
++	fi;
+ netargs=setenv bootargs ${jh_clk} ${mcore_clk} console=${console} root=/dev/nfs
+ 	ip=dhcp nfsroot=${serverip}:${nfsroot},v3,tcp
+ netboot=echo Booting from net ...;
+@@ -101,10 +126,12 @@ netboot=echo Booting from net ...;
+ 	fi;
+ bsp_bootcmd=setenv opteeoverlay yes;echo Running BSP bootcmd ...;
+ 	mmc dev ${mmcdev};
+-	if run loadimage; then
+-		run mmcboot;
+-	else
+-		run netboot;
++	if mmc rescan; then
++		if run loadimage; then
++			run mmcboot;
++		else
++			run emmcboot;
++		fi;
+ 	fi;
+ #endif
+ #endif
+diff --git a/configs/imx8mp_evk_defconfig b/configs/imx8mp_evk_defconfig
+index 8358796f135..bdd4a7bb0ee 100644
+--- a/configs/imx8mp_evk_defconfig
++++ b/configs/imx8mp_evk_defconfig
+@@ -14,7 +14,7 @@ CONFIG_ENV_OFFSET=0x700000
+ CONFIG_ENV_SECT_SIZE=0x10000
+ CONFIG_DM_GPIO=y
+ CONFIG_DEFAULT_DEVICE_TREE="freescale/imx8mp-evk"
+-CONFIG_USB_TCPC=y
++# CONFIG_USB_TCPC is not set
+ CONFIG_TARGET_IMX8MP_EVK=y
+ CONFIG_SPL_SERIAL=y
+ CONFIG_SPL_DRIVERS_MISC=y
+@@ -35,7 +35,7 @@ CONFIG_REMAKE_ELF=y
+ CONFIG_OF_BOARD_FIXUP=y
+ CONFIG_OF_BOARD_SETUP=y
+ CONFIG_OF_SYSTEM_SETUP=y
+-CONFIG_BOOTCOMMAND="run sr_ir_v2_cmd;bootflow scan -lb; run bsp_bootcmd"
++CONFIG_BOOTCOMMAND="run bsp_bootcmd"
+ CONFIG_DEFAULT_FDT_FILE="imx8mp-evk.dtb"
+ CONFIG_ARCH_MISC_INIT=y
+ CONFIG_BOARD_EARLY_INIT_F=y
+@@ -57,8 +57,8 @@ CONFIG_SYS_PROMPT="u-boot=> "
+ CONFIG_SYS_CBSIZE=2048
+ CONFIG_SYS_PBSIZE=2074
+ # CONFIG_BOOTM_NETBSD is not set
+-# CONFIG_CMD_EXPORTENV is not set
+-# CONFIG_CMD_IMPORTENV is not set
++CONFIG_CMD_EXPORTENV=y
++CONFIG_CMD_IMPORTENV=y
+ CONFIG_CMD_ERASEENV=y
+ CONFIG_CMD_NVEDIT_EFI=y
+ CONFIG_CMD_CRC32=y
+@@ -85,6 +85,9 @@ CONFIG_CMD_TIMER=y
+ CONFIG_CMD_REGULATOR=y
+ CONFIG_CMD_EXT4_WRITE=y
+ CONFIG_CMD_LED=y
++CONFIG_SYSINFO=y
++CONFIG_SYSINFO_SMBIOS=y
++CONFIG_SMBIOS_PARSER=y
+ CONFIG_OF_CONTROL=y
+ CONFIG_SPL_OF_CONTROL=y
+ CONFIG_ENV_OVERWRITE=y
+@@ -181,12 +184,9 @@ CONFIG_BMP_32BPP=y
+ CONFIG_IMX8M_BLK_CTRL=y
+ CONFIG_VIDEO_LOGO=y
+ CONFIG_SYS_WHITE_ON_BLACK=y
+-CONFIG_VIDEO_LCD_RAYDIUM_RM67191=y
+ CONFIG_VIDEO_IMX_SEC_DSI=y
+-CONFIG_VIDEO_IMX_LCDIFV3=y
+ CONFIG_SPLASH_SCREEN=y
+ CONFIG_SPLASH_SCREEN_ALIGN=y
+-CONFIG_VIDEO_ADV7535=y
+ CONFIG_LEGACY_IMAGE_FORMAT=y
+ CONFIG_LZO=y
+ CONFIG_BZIP2=y
+diff --git a/dts/upstream/src/arm64/freescale/imx8mp-evk.dts b/dts/upstream/src/arm64/freescale/imx8mp-evk.dts
+index d26930f1a9e..c359500c865 100644
+--- a/dts/upstream/src/arm64/freescale/imx8mp-evk.dts
++++ b/dts/upstream/src/arm64/freescale/imx8mp-evk.dts
+@@ -9,45 +9,17 @@
+ #include "imx8mp.dtsi"
+ 
+ / {
+-	model = "NXP i.MX8MPlus EVK board";
++	model = "NXP i.MX8MPlus LPDDR4 ECU150V2 board";
+ 	compatible = "fsl,imx8mp-evk", "fsl,imx8mp";
+ 
+-	chosen {
+-		stdout-path = &uart2;
+-	};
+-
+-	backlight_lvds: backlight-lvds {
+-		compatible = "pwm-backlight";
+-		pwms = <&pwm2 0 100000 0>;
+-		brightness-levels = <0 100>;
+-		num-interpolated-steps = <100>;
+-		default-brightness-level = <100>;
+-		power-supply = <&reg_per_12v>;
+-		status = "disabled";
+-	};
+-
+-	hdmi-connector {
+-		compatible = "hdmi-connector";
+-		label = "hdmi";
+-		type = "a";
+-
+-		port {
+-			hdmi_connector_in: endpoint {
+-				remote-endpoint = <&adv7535_out>;
+-			};
+-		};
++	aliases {
++		mmc0 = &usdhc3;
++		mmc1 = &usdhc2;
+ 	};
+ 
+-	gpio-leds {
+-		compatible = "gpio-leds";
+-		pinctrl-names = "default";
+-		pinctrl-0 = <&pinctrl_gpio_led>;
+-
+-		status {
+-			label = "yellow:status";
+-			gpios = <&gpio3 16 GPIO_ACTIVE_HIGH>;
+-			default-state = "on";
+-		};
++	chosen {
++		bootargs = "console=ttymxc1,115200 earlycon=ec_imx6q,0x30890000,115200";
++		stdout-path = &uart2;
+ 	};
+ 
+ 	memory@40000000 {
+@@ -56,35 +28,6 @@
+ 		      <0x1 0x00000000 0 0xc0000000>;
+ 	};
+ 
+-	native-hdmi-connector {
+-		compatible = "hdmi-connector";
+-		label = "HDMI OUT";
+-		type = "a";
+-
+-		port {
+-			hdmi_in: endpoint {
+-				remote-endpoint = <&hdmi_tx_out>;
+-			};
+-		};
+-	};
+-
+-	pcie0_refclk: pcie0-refclk {
+-		compatible = "fixed-clock";
+-		#clock-cells = <0>;
+-		clock-frequency = <100000000>;
+-	};
+-
+-	reg_audio_pwr: regulator-audio-pwr {
+-		compatible = "regulator-fixed";
+-		pinctrl-names = "default";
+-		pinctrl-0 = <&pinctrl_audio_pwr_reg>;
+-		regulator-name = "audio-pwr";
+-		regulator-min-microvolt = <3300000>;
+-		regulator-max-microvolt = <3300000>;
+-		gpio = <&gpio4 29 GPIO_ACTIVE_HIGH>;
+-		enable-active-high;
+-	};
+-
+ 	reg_can1_stby: regulator-can1-stby {
+ 		compatible = "regulator-fixed";
+ 		regulator-name = "can1-stby";
+@@ -107,26 +50,6 @@
+ 		enable-active-high;
+ 	};
+ 
+-	reg_pcie0: regulator-pcie {
+-		compatible = "regulator-fixed";
+-		pinctrl-names = "default";
+-		pinctrl-0 = <&pinctrl_pcie0_reg>;
+-		regulator-name = "MPCIE_3V3";
+-		regulator-min-microvolt = <3300000>;
+-		regulator-max-microvolt = <3300000>;
+-		gpio = <&gpio2 6 GPIO_ACTIVE_HIGH>;
+-		enable-active-high;
+-	};
+-
+-	reg_per_12v: regulator-per-12v {
+-		compatible = "regulator-fixed";
+-		regulator-name = "PER_12V";
+-		regulator-min-microvolt = <12000000>;
+-		regulator-max-microvolt = <12000000>;
+-		gpio = <&pca6416 1 GPIO_ACTIVE_HIGH>;
+-		enable-active-high;
+-	};
+-
+ 	reg_usdhc2_vmmc: regulator-usdhc2 {
+ 		compatible = "regulator-fixed";
+ 		pinctrl-names = "default";
+@@ -136,138 +59,8 @@
+ 		regulator-max-microvolt = <3300000>;
+ 		gpio = <&gpio2 19 GPIO_ACTIVE_HIGH>;
+ 		enable-active-high;
+-	};
+-
+-	reg_vext_3v3: regulator-vext-3v3 {
+-		compatible = "regulator-fixed";
+-		regulator-name = "VEXT_3V3";
+-		regulator-min-microvolt = <3300000>;
+-		regulator-max-microvolt = <3300000>;
+-	};
+-
+-	audio_codec_bt_sco: audio-codec-bt-sco {
+-		compatible = "linux,bt-sco";
+-		#sound-dai-cells = <1>;
+-	};
+-
+-	sound {
+-		compatible = "simple-audio-card";
+-		simple-audio-card,name = "wm8960-audio";
+-		simple-audio-card,format = "i2s";
+-		simple-audio-card,frame-master = <&cpudai>;
+-		simple-audio-card,bitclock-master = <&cpudai>;
+-		simple-audio-card,widgets =
+-			"Headphone", "Headphone Jack",
+-			"Speaker", "External Speaker",
+-			"Microphone", "Mic Jack";
+-		simple-audio-card,routing =
+-			"Headphone Jack", "HP_L",
+-			"Headphone Jack", "HP_R",
+-			"External Speaker", "SPK_LP",
+-			"External Speaker", "SPK_LN",
+-			"External Speaker", "SPK_RP",
+-			"External Speaker", "SPK_RN",
+-			"LINPUT1", "Mic Jack",
+-			"LINPUT3", "Mic Jack",
+-			"Mic Jack", "MICB";
+-
+-		cpudai: simple-audio-card,cpu {
+-			sound-dai = <&sai3>;
+-		};
+-
+-		simple-audio-card,codec {
+-			sound-dai = <&wm8960>;
+-		};
+-
+-	};
+-
+-	sound-bt-sco {
+-		compatible = "simple-audio-card";
+-		simple-audio-card,name = "bt-sco-audio";
+-		simple-audio-card,format = "dsp_a";
+-		simple-audio-card,bitclock-inversion;
+-		simple-audio-card,frame-master = <&btcpu>;
+-		simple-audio-card,bitclock-master = <&btcpu>;
+-
+-		btcpu: simple-audio-card,cpu {
+-			sound-dai = <&sai2>;
+-			dai-tdm-slot-num = <2>;
+-			dai-tdm-slot-width = <16>;
+-		};
+-
+-		simple-audio-card,codec {
+-			sound-dai = <&audio_codec_bt_sco 1>;
+-		};
+-	};
+-
+-	sound-hdmi {
+-		compatible = "fsl,imx-audio-hdmi";
+-		model = "audio-hdmi";
+-		audio-cpu = <&aud2htx>;
+-		hdmi-out;
+-	};
+-
+-	sound-micfil {
+-		compatible = "fsl,imx-audio-card";
+-		model = "micfil-audio";
+-
+-		pri-dai-link {
+-			link-name = "micfil hifi";
+-			format = "i2s";
+-
+-			cpu {
+-				sound-dai = <&micfil>;
+-			};
+-		};
+-	};
+-
+-	sound-xcvr {
+-		compatible = "fsl,imx-audio-card";
+-		model = "imx-audio-xcvr";
+-
+-		pri-dai-link {
+-			link-name = "XCVR PCM";
+-
+-			cpu {
+-				sound-dai = <&xcvr>;
+-			};
+-		};
+-	};
+-
+-	reserved-memory {
+-		#address-cells = <2>;
+-		#size-cells = <2>;
+-		ranges;
+-
+-		dsp_vdev0vring0: vdev0vring0@942f0000 {
+-			reg = <0 0x942f0000 0 0x8000>;
+-			no-map;
+-		};
+-
+-		dsp_vdev0vring1: vdev0vring1@942f8000 {
+-			reg = <0 0x942f8000 0 0x8000>;
+-			no-map;
+-		};
+-
+-		dsp_vdev0buffer: vdev0buffer@94300000 {
+-			compatible = "shared-dma-pool";
+-			reg = <0 0x94300000 0 0x100000>;
+-			no-map;
+-		};
+-	};
+-};
+-
+-&flexspi {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_flexspi0>;
+-	status = "okay";
+-
+-	flash@0 {
+-		compatible = "jedec,spi-nor";
+-		reg = <0>;
+-		spi-max-frequency = <80000000>;
+-		spi-tx-bus-width = <1>;
+-		spi-rx-bus-width = <4>;
++		startup-delay-us = <100>;
++		off-on-delay-us = <12000>;
+ 	};
+ };
+ 
+@@ -287,18 +80,11 @@
+ 	cpu-supply = <&reg_arm>;
+ };
+ 
+-&aud2htx {
+-	status = "okay";
+-};
+-
+ &eqos {
+ 	pinctrl-names = "default";
+ 	pinctrl-0 = <&pinctrl_eqos>;
+ 	phy-mode = "rgmii-id";
+ 	phy-handle = <&ethphy0>;
+-	snps,force_thresh_dma_mode;
+-	snps,mtl-tx-config = <&mtl_tx_setup>;
+-	snps,mtl-rx-config = <&mtl_rx_setup>;
+ 	status = "okay";
+ 
+ 	mdio {
+@@ -310,74 +96,6 @@
+ 			compatible = "ethernet-phy-ieee802.3-c22";
+ 			reg = <1>;
+ 			eee-broken-1000t;
+-			reset-gpios = <&gpio4 22 GPIO_ACTIVE_LOW>;
+-			reset-assert-us = <10000>;
+-			reset-deassert-us = <80000>;
+-			realtek,clkout-disable;
+-		};
+-	};
+-
+-	mtl_tx_setup: tx-queues-config {
+-		snps,tx-queues-to-use = <5>;
+-
+-		queue0 {
+-			snps,dcb-algorithm;
+-			snps,priority = <0x1>;
+-		};
+-
+-		queue1 {
+-			snps,dcb-algorithm;
+-			snps,priority = <0x2>;
+-		};
+-
+-		queue2 {
+-			snps,dcb-algorithm;
+-			snps,priority = <0x4>;
+-		};
+-
+-		queue3 {
+-			snps,dcb-algorithm;
+-			snps,priority = <0x8>;
+-		};
+-
+-		queue4 {
+-			snps,dcb-algorithm;
+-			snps,priority = <0xf0>;
+-		};
+-	};
+-
+-	mtl_rx_setup: rx-queues-config {
+-		snps,rx-queues-to-use = <5>;
+-		snps,rx-sched-sp;
+-
+-		queue0 {
+-			snps,dcb-algorithm;
+-			snps,priority = <0x1>;
+-			snps,map-to-dma-channel = <0>;
+-		};
+-
+-		queue1 {
+-			snps,dcb-algorithm;
+-			snps,priority = <0x2>;
+-			snps,map-to-dma-channel = <1>;
+-		};
+-
+-		queue2 {
+-			snps,dcb-algorithm;
+-			snps,priority = <0x4>;
+-			snps,map-to-dma-channel = <2>;
+-		};
+-
+-		queue3 {
+-			snps,dcb-algorithm;
+-			snps,priority = <0x8>;
+-			snps,map-to-dma-channel = <3>;
+-		};
+-
+-		queue4 {
+-			snps,dcb-algorithm;
+-			snps,priority = <0xf0>;
+-			snps,map-to-dma-channel = <4>;
+ 		};
+ 	};
+ };
+@@ -398,10 +116,6 @@
+ 			compatible = "ethernet-phy-ieee802.3-c22";
+ 			reg = <1>;
+ 			eee-broken-1000t;
+-			reset-gpios = <&gpio4 2 GPIO_ACTIVE_LOW>;
+-			reset-assert-us = <10000>;
+-			reset-deassert-us = <80000>;
+-			realtek,clkout-disable;
+ 		};
+ 	};
+ };
+@@ -420,28 +134,6 @@
+ 	status = "disabled";/* can2 pin conflict with pdm */
+ };
+ 
+-&hdmi_pvi {
+-	status = "okay";
+-};
+-
+-&hdmi_tx {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_hdmi>;
+-	status = "okay";
+-
+-	ports {
+-		port@1 {
+-			hdmi_tx_out: endpoint {
+-				remote-endpoint = <&hdmi_in>;
+-			};
+-		};
+-	};
+-};
+-
+-&hdmi_tx_phy {
+-	status = "okay";
+-};
+-
+ &i2c1 {
+ 	clock-frequency = <400000>;
+ 	pinctrl-names = "default";
+@@ -533,216 +225,41 @@
+ 	pinctrl-names = "default";
+ 	pinctrl-0 = <&pinctrl_i2c2>;
+ 	status = "okay";
+-
+-	hdmi@3d {
+-		compatible = "adi,adv7535";
+-		reg = <0x3d>;
+-		interrupt-parent = <&gpio1>;
+-		interrupts = <9 IRQ_TYPE_EDGE_FALLING>;
+-		adi,dsi-lanes = <4>;
+-		avdd-supply = <&reg_buck5>;
+-		dvdd-supply = <&reg_buck5>;
+-		pvdd-supply = <&reg_buck5>;
+-		a2vdd-supply = <&reg_buck5>;
+-		v3p3-supply = <&reg_vext_3v3>;
+-		v1p2-supply = <&reg_buck5>;
+-
+-		ports {
+-			#address-cells = <1>;
+-			#size-cells = <0>;
+-
+-			port@0 {
+-				reg = <0>;
+-
+-				adv7535_in: endpoint {
+-					remote-endpoint = <&dsi_out>;
+-				};
+-			};
+-
+-			port@1 {
+-				reg = <1>;
+-
+-				adv7535_out: endpoint {
+-					remote-endpoint = <&hdmi_connector_in>;
+-				};
+-			};
+-
+-		};
+-	};
+ };
+ 
+-&i2c3 {
+-	clock-frequency = <400000>;
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_i2c3>;
+-	status = "okay";
+-
+-	wm8960: codec@1a {
+-		compatible = "wlf,wm8960";
+-		reg = <0x1a>;
+-		#sound-dai-cells = <0>;
+-		clocks = <&audio_blk_ctrl IMX8MP_CLK_AUDIOMIX_SAI3_MCLK1>;
+-		clock-names = "mclk";
+-		wlf,shared-lrclk;
+-		wlf,hp-cfg = <3 2 3>;
+-		wlf,gpio-cfg = <1 3>;
+-		SPKVDD1-supply = <&reg_audio_pwr>;
+-	};
+-
+-	pca6416: gpio@20 {
+-		compatible = "ti,tca6416";
+-		reg = <0x20>;
+-		gpio-controller;
+-		#gpio-cells = <2>;
+-		interrupt-controller;
+-		#interrupt-cells = <2>;
+-		pinctrl-names = "default";
+-		pinctrl-0 = <&pinctrl_pca6416_int>;
+-		interrupt-parent = <&gpio1>;
+-		interrupts = <12 IRQ_TYPE_LEVEL_LOW>;
+-		gpio-line-names = "EXT_PWREN1",
+-			"EXT_PWREN2",
+-			"CAN1/I2C5_SEL",
+-			"PDM/CAN2_SEL",
+-			"FAN_EN",
+-			"PWR_MEAS_IO1",
+-			"PWR_MEAS_IO2",
+-			"EXP_P0_7",
+-			"EXP_P1_0",
+-			"EXP_P1_1",
+-			"EXP_P1_2",
+-			"EXP_P1_3",
+-			"EXP_P1_4",
+-			"EXP_P1_5",
+-			"EXP_P1_6",
+-			"EXP_P1_7";
+-	};
+-};
+-
+-/* I2C on expansion connector J22. */
+-&i2c5 {
+-	clock-frequency = <100000>; /* Lower clock speed for external bus. */
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_i2c5>;
+-	status = "disabled"; /* can1 pins conflict with i2c5 */
+-
+-	/* GPIO 2 of PCA6416 is used to switch between CAN1 and I2C5 functions:
+-	 *     LOW:  CAN1 (default, pull-down)
+-	 *     HIGH: I2C5
+-	 * You need to set it to high to enable I2C5 (for example, add gpio-hog
+-	 * in pca6416 node).
+-	 */
+-};
+-
+-&lcdif1 {
+-	status = "okay";
+-};
+-
+-&lcdif3 {
+-	status = "okay";
+-};
+-
+-&micfil {
+-	#sound-dai-cells = <0>;
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_pdm>;
+-	assigned-clocks = <&clk IMX8MP_CLK_PDM>;
+-	assigned-clock-parents = <&clk IMX8MP_AUDIO_PLL1_OUT>;
+-	assigned-clock-rates = <196608000>;
+-	status = "okay";
+-};
+-
+-&mipi_dsi {
+-	samsung,esc-clock-frequency = <10000000>;
+-	status = "okay";
+-
+-	ports {
+-		port@1 {
+-			reg = <1>;
+-
+-			dsi_out: endpoint {
+-				remote-endpoint = <&adv7535_in>;
+-				data-lanes = <1 2 3 4>;
+-			};
+-		};
+-	};
+-};
+-
+-&pcie_phy {
+-	fsl,refclk-pad-mode = <IMX8_PCIE_REFCLK_PAD_INPUT>;
+-	clocks = <&pcie0_refclk>;
+-	clock-names = "ref";
+-	status = "okay";
+-};
+-
+-&pcie {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_pcie0>;
+-	reset-gpio = <&gpio2 7 GPIO_ACTIVE_LOW>;
+-	vpcie-supply = <&reg_pcie0>;
+-	status = "okay";
+-};
+-
+-&pwm1 {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_pwm1>;
+-	status = "okay";
+-};
+-
+-&pwm2 {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_pwm2>;
+-	status = "okay";
+-};
+-
+-&pwm4 {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_pwm4>;
+-	status = "okay";
+-};
+-
+-&sai2 {
+-	#sound-dai-cells = <0>;
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_sai2>;
+-	assigned-clocks = <&clk IMX8MP_CLK_SAI2>;
+-	assigned-clock-parents = <&clk IMX8MP_AUDIO_PLL1_OUT>;
+-	assigned-clock-rates = <12288000>;
+-	fsl,sai-mclk-direction-output;
++&snvs_pwrkey {
+ 	status = "okay";
+ };
+ 
+-&sai3 {
++&uart2 {
++	/* console */
+ 	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_sai3>;
+-	assigned-clocks = <&clk IMX8MP_CLK_SAI3>;
+-	assigned-clock-parents = <&clk IMX8MP_AUDIO_PLL1_OUT>;
+-	assigned-clock-rates = <12288000>;
+-	fsl,sai-mclk-direction-output;
++	pinctrl-0 = <&pinctrl_uart2>;
+ 	status = "okay";
+ };
+ 
+-&snvs_pwrkey {
++&usb3_phy0 {
++	fsl,phy-tx-vref-tune = <0xe>;
++	fsl,phy-tx-preemp-amp-tune = <3>;
++	fsl,phy-tx-vboost-level = <5>;
++	fsl,phy-comp-dis-tune = <7>;
++	fsl,pcs-tx-deemph-3p5db = <0x21>;
++	fsl,phy-pcs-tx-swing-full = <0x7f>;
+ 	status = "okay";
+ };
+ 
+-&uart1 { /* BT */
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_uart1>;
+-	assigned-clocks = <&clk IMX8MP_CLK_UART1>;
+-	assigned-clock-parents = <&clk IMX8MP_SYS_PLL1_80M>;
+-	uart-has-rtscts;
++&usb3_0 {
+ 	status = "okay";
+ };
+ 
+-&uart2 {
+-	/* console */
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_uart2>;
++&usb_dwc3_0 {
++	dr_mode = "host";
+ 	status = "okay";
+ };
+ 
+ &usb3_phy1 {
++	fsl,phy-tx-preemp-amp-tune = <3>;
++	fsl,phy-tx-vref-tune = <0xb>;
+ 	status = "okay";
+ };
+ 
+@@ -751,24 +268,11 @@
+ };
+ 
+ &usb_dwc3_1 {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_usb1_vbus>;
+ 	dr_mode = "host";
+ 	status = "okay";
+ };
+ 
+-&uart3 {
+-	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_uart3>;
+-	assigned-clocks = <&clk IMX8MP_CLK_UART3>;
+-	assigned-clock-parents = <&clk IMX8MP_SYS_PLL1_80M>;
+-	uart-has-rtscts;
+-	status = "okay";
+-};
+-
+ &usdhc2 {
+-	assigned-clocks = <&clk IMX8MP_CLK_USDHC2>;
+-	assigned-clock-rates = <400000000>;
+ 	pinctrl-names = "default", "state_100mhz", "state_200mhz";
+ 	pinctrl-0 = <&pinctrl_usdhc2>, <&pinctrl_usdhc2_gpio>;
+ 	pinctrl-1 = <&pinctrl_usdhc2_100mhz>, <&pinctrl_usdhc2_gpio>;
+@@ -780,8 +284,6 @@
+ };
+ 
+ &usdhc3 {
+-	assigned-clocks = <&clk IMX8MP_CLK_USDHC3>;
+-	assigned-clock-rates = <400000000>;
+ 	pinctrl-names = "default", "state_100mhz", "state_200mhz";
+ 	pinctrl-0 = <&pinctrl_usdhc3>;
+ 	pinctrl-1 = <&pinctrl_usdhc3_100mhz>;
+@@ -798,58 +300,46 @@
+ 	status = "okay";
+ };
+ 
+-&xcvr {
+-	#sound-dai-cells = <0>;
+-	status = "okay";
+-};
+-
+ &iomuxc {
+ 	pinctrl-names = "default";
+-	pinctrl-0 = <&pinctrl_hog>;
+-
+-	pinctrl_audio_pwr_reg: audiopwrreggrp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_SAI3_RXC__GPIO4_IO29		0xd6
+-		>;
+-	};
+ 
+ 	pinctrl_eqos: eqosgrp {
+ 		fsl,pins = <
+-			MX8MP_IOMUXC_ENET_MDC__ENET_QOS_MDC				0x2
+-			MX8MP_IOMUXC_ENET_MDIO__ENET_QOS_MDIO				0x2
+-			MX8MP_IOMUXC_ENET_RD0__ENET_QOS_RGMII_RD0			0x90
+-			MX8MP_IOMUXC_ENET_RD1__ENET_QOS_RGMII_RD1			0x90
+-			MX8MP_IOMUXC_ENET_RD2__ENET_QOS_RGMII_RD2			0x90
+-			MX8MP_IOMUXC_ENET_RD3__ENET_QOS_RGMII_RD3			0x90
+-			MX8MP_IOMUXC_ENET_RXC__CCM_ENET_QOS_CLOCK_GENERATE_RX_CLK	0x90
+-			MX8MP_IOMUXC_ENET_RX_CTL__ENET_QOS_RGMII_RX_CTL			0x90
+-			MX8MP_IOMUXC_ENET_TD0__ENET_QOS_RGMII_TD0			0x16
+-			MX8MP_IOMUXC_ENET_TD1__ENET_QOS_RGMII_TD1			0x16
+-			MX8MP_IOMUXC_ENET_TD2__ENET_QOS_RGMII_TD2			0x16
+-			MX8MP_IOMUXC_ENET_TD3__ENET_QOS_RGMII_TD3			0x16
+-			MX8MP_IOMUXC_ENET_TX_CTL__ENET_QOS_RGMII_TX_CTL			0x16
+-			MX8MP_IOMUXC_ENET_TXC__CCM_ENET_QOS_CLOCK_GENERATE_TX_CLK	0x16
+-			MX8MP_IOMUXC_SAI2_RXC__GPIO4_IO22				0x10
++			MX8MP_IOMUXC_ENET_MDC__ENET_QOS_MDC	0x3
++			MX8MP_IOMUXC_ENET_MDIO__ENET_QOS_MDIO	0x3
++			MX8MP_IOMUXC_ENET_RD0__ENET_QOS_RGMII_RD0	0x91
++			MX8MP_IOMUXC_ENET_RD1__ENET_QOS_RGMII_RD1	0x91
++			MX8MP_IOMUXC_ENET_RD2__ENET_QOS_RGMII_RD2	0x91
++			MX8MP_IOMUXC_ENET_RD3__ENET_QOS_RGMII_RD3	0x91
++			MX8MP_IOMUXC_ENET_RXC__CCM_ENET_QOS_CLOCK_GENERATE_RX_CLK	0x91
++			MX8MP_IOMUXC_ENET_RX_CTL__ENET_QOS_RGMII_RX_CTL	0x91
++			MX8MP_IOMUXC_ENET_TD0__ENET_QOS_RGMII_TD0	0x1f
++			MX8MP_IOMUXC_ENET_TD1__ENET_QOS_RGMII_TD1	0x1f
++			MX8MP_IOMUXC_ENET_TD2__ENET_QOS_RGMII_TD2	0x1f
++			MX8MP_IOMUXC_ENET_TD3__ENET_QOS_RGMII_TD3	0x1f
++			MX8MP_IOMUXC_ENET_TX_CTL__ENET_QOS_RGMII_TX_CTL	0x1f
++			MX8MP_IOMUXC_ENET_TXC__CCM_ENET_QOS_CLOCK_GENERATE_TX_CLK	0x1f
++			MX8MP_IOMUXC_SAI2_RXC__GPIO4_IO22	0x19
+ 		>;
+ 	};
+ 
+ 	pinctrl_fec: fecgrp {
+ 		fsl,pins = <
+-			MX8MP_IOMUXC_SAI1_RXD2__ENET1_MDC		0x2
+-			MX8MP_IOMUXC_SAI1_RXD3__ENET1_MDIO		0x2
+-			MX8MP_IOMUXC_SAI1_RXD4__ENET1_RGMII_RD0		0x90
+-			MX8MP_IOMUXC_SAI1_RXD5__ENET1_RGMII_RD1		0x90
+-			MX8MP_IOMUXC_SAI1_RXD6__ENET1_RGMII_RD2		0x90
+-			MX8MP_IOMUXC_SAI1_RXD7__ENET1_RGMII_RD3		0x90
+-			MX8MP_IOMUXC_SAI1_TXC__ENET1_RGMII_RXC		0x90
+-			MX8MP_IOMUXC_SAI1_TXFS__ENET1_RGMII_RX_CTL	0x90
+-			MX8MP_IOMUXC_SAI1_TXD0__ENET1_RGMII_TD0		0x16
+-			MX8MP_IOMUXC_SAI1_TXD1__ENET1_RGMII_TD1		0x16
+-			MX8MP_IOMUXC_SAI1_TXD2__ENET1_RGMII_TD2		0x16
+-			MX8MP_IOMUXC_SAI1_TXD3__ENET1_RGMII_TD3		0x16
+-			MX8MP_IOMUXC_SAI1_TXD4__ENET1_RGMII_TX_CTL	0x16
+-			MX8MP_IOMUXC_SAI1_TXD5__ENET1_RGMII_TXC		0x16
+-			MX8MP_IOMUXC_SAI1_RXD0__GPIO4_IO02		0x10
++			MX8MP_IOMUXC_SAI1_RXD2__ENET1_MDC	0x3
++			MX8MP_IOMUXC_SAI1_RXD3__ENET1_MDIO	0x3
++			MX8MP_IOMUXC_SAI1_RXD4__ENET1_RGMII_RD0	0x91
++			MX8MP_IOMUXC_SAI1_RXD5__ENET1_RGMII_RD1	0x91
++			MX8MP_IOMUXC_SAI1_RXD6__ENET1_RGMII_RD2	0x91
++			MX8MP_IOMUXC_SAI1_RXD7__ENET1_RGMII_RD3	0x91
++			MX8MP_IOMUXC_SAI1_TXC__ENET1_RGMII_RXC	0x91
++			MX8MP_IOMUXC_SAI1_TXFS__ENET1_RGMII_RX_CTL	0x91
++			MX8MP_IOMUXC_SAI1_TXD0__ENET1_RGMII_TD0	0x1f
++			MX8MP_IOMUXC_SAI1_TXD1__ENET1_RGMII_TD1	0x1f
++			MX8MP_IOMUXC_SAI1_TXD2__ENET1_RGMII_TD2	0x1f
++			MX8MP_IOMUXC_SAI1_TXD3__ENET1_RGMII_TD3	0x1f
++			MX8MP_IOMUXC_SAI1_TXD4__ENET1_RGMII_TX_CTL	0x1f
++			MX8MP_IOMUXC_SAI1_TXD5__ENET1_RGMII_TXC	0x1f
++			MX8MP_IOMUXC_SAI1_RXD0__GPIO4_IO02	0x19
+ 		>;
+ 	};
+ 
+@@ -879,149 +369,29 @@
+ 		>;
+ 	};
+ 
+-	pinctrl_flexspi0: flexspi0grp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_NAND_ALE__FLEXSPI_A_SCLK           0x1c2
+-			MX8MP_IOMUXC_NAND_CE0_B__FLEXSPI_A_SS0_B        0x82
+-			MX8MP_IOMUXC_NAND_DATA00__FLEXSPI_A_DATA00      0x82
+-			MX8MP_IOMUXC_NAND_DATA01__FLEXSPI_A_DATA01      0x82
+-			MX8MP_IOMUXC_NAND_DATA02__FLEXSPI_A_DATA02      0x82
+-			MX8MP_IOMUXC_NAND_DATA03__FLEXSPI_A_DATA03      0x82
+-		>;
+-	};
+-
+-	pinctrl_gpio_led: gpioledgrp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_NAND_READY_B__GPIO3_IO16	0x140
+-		>;
+-	};
+-
+-	pinctrl_hdmi: hdmigrp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_HDMI_DDC_SCL__HDMIMIX_HDMI_SCL	0x1c2
+-			MX8MP_IOMUXC_HDMI_DDC_SDA__HDMIMIX_HDMI_SDA	0x1c2
+-			MX8MP_IOMUXC_HDMI_CEC__HDMIMIX_HDMI_CEC		0x10
+-		>;
+-	};
+-
+-	pinctrl_hog: hoggrp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_HDMI_HPD__HDMIMIX_HDMI_HPD		0x40000010
+-		>;
+-	};
+-
+ 	pinctrl_i2c1: i2c1grp {
+ 		fsl,pins = <
+-			MX8MP_IOMUXC_I2C1_SCL__I2C1_SCL		0x400001c2
+-			MX8MP_IOMUXC_I2C1_SDA__I2C1_SDA		0x400001c2
++			MX8MP_IOMUXC_I2C1_SCL__I2C1_SCL		0x400001c3
++			MX8MP_IOMUXC_I2C1_SDA__I2C1_SDA		0x400001c3
+ 		>;
+ 	};
+ 
+ 	pinctrl_i2c2: i2c2grp {
+ 		fsl,pins = <
+-			MX8MP_IOMUXC_I2C2_SCL__I2C2_SCL		0x400001c2
+-			MX8MP_IOMUXC_I2C2_SDA__I2C2_SDA		0x400001c2
+-		>;
+-	};
+-
+-	pinctrl_i2c3: i2c3grp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_I2C3_SCL__I2C3_SCL		0x400001c2
+-			MX8MP_IOMUXC_I2C3_SDA__I2C3_SDA		0x400001c2
+-		>;
+-	};
+-
+-	pinctrl_i2c5: i2c5grp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_SPDIF_RX__I2C5_SDA         0x400001c2
+-			MX8MP_IOMUXC_SPDIF_TX__I2C5_SCL         0x400001c2
+-		>;
+-	};
+-
+-	pinctrl_pcie0: pcie0grp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_I2C4_SCL__PCIE_CLKREQ_B	0x60 /* open drain, pull up */
+-			MX8MP_IOMUXC_SD1_DATA5__GPIO2_IO07	0x40
+-		>;
+-	};
+-
+-	pinctrl_pcie0_reg: pcie0reggrp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_SD1_DATA4__GPIO2_IO06	0x40
+-		>;
+-	};
+-
+-	pinctrl_pdm: pdmgrp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_SAI5_RXC__AUDIOMIX_PDM_CLK		0xd6
+-			MX8MP_IOMUXC_SAI5_RXD0__AUDIOMIX_PDM_BIT_STREAM00	0xd6
+-			MX8MP_IOMUXC_SAI5_RXD1__AUDIOMIX_PDM_BIT_STREAM01	0xd6
+-			MX8MP_IOMUXC_SAI5_RXD2__AUDIOMIX_PDM_BIT_STREAM02	0xd6
+-			MX8MP_IOMUXC_SAI5_RXD3__AUDIOMIX_PDM_BIT_STREAM03	0xd6
++			MX8MP_IOMUXC_I2C2_SCL__I2C2_SCL			0x400001c3
++			MX8MP_IOMUXC_I2C2_SDA__I2C2_SDA			0x400001c3
+ 		>;
+ 	};
+ 
+ 	pinctrl_pmic: pmicgrp {
+ 		fsl,pins = <
+-			MX8MP_IOMUXC_GPIO1_IO03__GPIO1_IO03	0x000001c0
+-		>;
+-	};
+-
+-	pinctrl_pca6416_int: pca6416_int_grp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_GPIO1_IO12__GPIO1_IO12	0x146 /* Input pull-up. */
+-		>;
+-	};
+-
+-	pinctrl_pwm1: pwm1grp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_GPIO1_IO01__PWM1_OUT	0x116
+-		>;
+-	};
+-
+-	pinctrl_pwm2: pwm2grp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_GPIO1_IO11__PWM2_OUT	0x116
+-		>;
+-	};
+-
+-	pinctrl_pwm4: pwm4grp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_SAI5_RXFS__PWM4_OUT	0x116
++			MX8MP_IOMUXC_GPIO1_IO03__GPIO1_IO03	0x41
+ 		>;
+ 	};
+ 
+ 	pinctrl_reg_usdhc2_vmmc: regusdhc2vmmcgrp {
+ 		fsl,pins = <
+-			MX8MP_IOMUXC_SD2_RESET_B__GPIO2_IO19	0x40
+-		>;
+-	};
+-
+-	pinctrl_uart1: uart1grp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_UART1_RXD__UART1_DCE_RX	0x140
+-			MX8MP_IOMUXC_UART1_TXD__UART1_DCE_TX	0x140
+-			MX8MP_IOMUXC_UART3_RXD__UART1_DCE_CTS	0x140
+-			MX8MP_IOMUXC_UART3_TXD__UART1_DCE_RTS	0x140
+-		>;
+-	};
+-
+-	pinctrl_sai2: sai2grp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_SAI2_TXC__AUDIOMIX_SAI2_TX_BCLK	0xd6
+-			MX8MP_IOMUXC_SAI2_TXFS__AUDIOMIX_SAI2_TX_SYNC	0xd6
+-			MX8MP_IOMUXC_SAI2_TXD0__AUDIOMIX_SAI2_TX_DATA00	0xd6
+-			MX8MP_IOMUXC_SAI2_RXD0__AUDIOMIX_SAI2_RX_DATA00	0xd6
+-		>;
+-	};
+-
+-	pinctrl_sai3: sai3grp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_SAI3_TXFS__AUDIOMIX_SAI3_TX_SYNC	0xd6
+-			MX8MP_IOMUXC_SAI3_TXC__AUDIOMIX_SAI3_TX_BCLK	0xd6
+-			MX8MP_IOMUXC_SAI3_RXD__AUDIOMIX_SAI3_RX_DATA00	0xd6
+-			MX8MP_IOMUXC_SAI3_TXD__AUDIOMIX_SAI3_TX_DATA00	0xd6
+-			MX8MP_IOMUXC_SAI3_MCLK__AUDIOMIX_SAI3_MCLK	0xd6
++			MX8MP_IOMUXC_SD2_RESET_B__GPIO2_IO19	0x41
+ 		>;
+ 	};
+ 
+@@ -1032,21 +402,6 @@
+ 		>;
+ 	};
+ 
+-	pinctrl_usb1_vbus: usb1grp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_GPIO1_IO14__USB2_OTG_PWR	0x10
+-		>;
+-	};
+-
+-	pinctrl_uart3: uart3grp {
+-		fsl,pins = <
+-			MX8MP_IOMUXC_ECSPI1_SCLK__UART3_DCE_RX		0x140
+-			MX8MP_IOMUXC_ECSPI1_MOSI__UART3_DCE_TX		0x140
+-			MX8MP_IOMUXC_ECSPI1_SS0__UART3_DCE_RTS		0x140
+-			MX8MP_IOMUXC_ECSPI1_MISO__UART3_DCE_CTS		0x140
+-		>;
+-	};
+-
+ 	pinctrl_usdhc2: usdhc2grp {
+ 		fsl,pins = <
+ 			MX8MP_IOMUXC_SD2_CLK__USDHC2_CLK	0x190
+@@ -1055,7 +410,7 @@
+ 			MX8MP_IOMUXC_SD2_DATA1__USDHC2_DATA1	0x1d0
+ 			MX8MP_IOMUXC_SD2_DATA2__USDHC2_DATA2	0x1d0
+ 			MX8MP_IOMUXC_SD2_DATA3__USDHC2_DATA3	0x1d0
+-			MX8MP_IOMUXC_GPIO1_IO04__USDHC2_VSELECT	0xc0
++			MX8MP_IOMUXC_GPIO1_IO04__USDHC2_VSELECT	0xc1
+ 		>;
+ 	};
+ 
+@@ -1067,7 +422,7 @@
+ 			MX8MP_IOMUXC_SD2_DATA1__USDHC2_DATA1	0x1d4
+ 			MX8MP_IOMUXC_SD2_DATA2__USDHC2_DATA2	0x1d4
+ 			MX8MP_IOMUXC_SD2_DATA3__USDHC2_DATA3	0x1d4
+-			MX8MP_IOMUXC_GPIO1_IO04__USDHC2_VSELECT 0xc0
++			MX8MP_IOMUXC_GPIO1_IO04__USDHC2_VSELECT 0xc1
+ 		>;
+ 	};
+ 
+@@ -1079,7 +434,7 @@
+ 			MX8MP_IOMUXC_SD2_DATA1__USDHC2_DATA1	0x1d6
+ 			MX8MP_IOMUXC_SD2_DATA2__USDHC2_DATA2	0x1d6
+ 			MX8MP_IOMUXC_SD2_DATA3__USDHC2_DATA3	0x1d6
+-			MX8MP_IOMUXC_GPIO1_IO04__USDHC2_VSELECT 0xc0
++			MX8MP_IOMUXC_GPIO1_IO04__USDHC2_VSELECT 0xc1
+ 		>;
+ 	};
+ 
+@@ -1139,7 +494,7 @@
+ 
+ 	pinctrl_wdog: wdoggrp {
+ 		fsl,pins = <
+-			MX8MP_IOMUXC_GPIO1_IO02__WDOG1_WDOG_B	0x166
++			MX8MP_IOMUXC_GPIO1_IO02__WDOG1_WDOG_B	0xc6
+ 		>;
+ 	};
+ };
+diff --git a/include/configs/imx8mp_evk.h b/include/configs/imx8mp_evk.h
+index ce6218fad73..7b1d2983a91 100644
+--- a/include/configs/imx8mp_evk.h
++++ b/include/configs/imx8mp_evk.h
+@@ -21,21 +21,25 @@
+ #define CFG_SYS_INIT_RAM_ADDR	0x40000000
+ #define CFG_SYS_INIT_RAM_SIZE	0x80000
+ 
+-/* Totally 6GB DDR */
+-#define CFG_SYS_SDRAM_BASE		0x40000000
+-#define PHYS_SDRAM			0x40000000
+-#define PHYS_SDRAM_SIZE			0xC0000000	/* 3 GB */
+-#define PHYS_SDRAM_2			0x100000000
+-#ifdef CONFIG_TARGET_IMX8MP_DDR4_EVK
+-#define PHYS_SDRAM_2_SIZE		0x40000000	/* 1 GB */
+-#else
+-#define PHYS_SDRAM_2_SIZE		0xC0000000	/* 3 GB */
+-#endif
++/* ========== ECU-150v2 DRAM Layout ========== */
++/* Default 4GB (2GB+2GB), runtime detect via board_phys_sdram_size() */
++#define CFG_SYS_SDRAM_BASE     0x40000000
++#define PHYS_SDRAM             0x40000000
++#define PHYS_SDRAM_SIZE        0x80000000        /* 2 GB bank 1 (default) */
++#define PHYS_SDRAM_2           0xC0000000
++#define PHYS_SDRAM_2_SIZE      0x80000000        /* 2 GB bank 2 (default) */
+ 
+ #define CFG_MXC_UART_BASE		UART2_BASE_ADDR
+ 
+ #define CFG_SYS_NAND_BASE           0x20000000
+ 
++/* ========== ECU-150v2 EEPROM MAC Address ========== */
++#define EEPROM_I2C_BUS              1    /* I2C bus number for EEPROM */
++#define EEPROM_I2C_ADDR             0x50 /* EEPROM chip address */
++#define EEPROM_MAC_OFFSET_ETH0      0x00 /* eth0 (eQOS) MAC offset */
++#define EEPROM_MAC_OFFSET_ETH1      0x06 /* eth1 (FEC) MAC offset */
++#define EEPROM_MAC_LENGTH           6    /* MAC address length */
++
+ #ifdef CONFIG_IMX_MATTER_TRUSTY
+ #define NS_ARCH_ARM64 1
+ #endif
+-- 
+2.43.0
+
