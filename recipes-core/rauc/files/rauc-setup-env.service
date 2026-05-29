@@ -1,0 +1,14 @@
+[Unit]
+Description=Generate RAUC system.conf & fw_env.config based on boot device
+DefaultDependencies=no
+After=local-fs.target
+Before=rauc.service
+ConditionPathExists=/proc/cmdline
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/rauc-setup-env.sh
+
+[Install]
+WantedBy=multi-user.target

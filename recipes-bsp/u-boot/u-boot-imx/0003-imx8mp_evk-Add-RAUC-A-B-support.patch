@@ -1,0 +1,202 @@
+From c09efc3ba78491e025c31440abddad0a84c6f888 Mon Sep 17 00:00:00 2001
+From: "suricata.lu" <suricata.lu@gmail.com>
+Date: Tue, 26 May 2026 16:19:08 +0800
+Subject: [PATCH] imx8mp_evk: Add RAUC A/B support
+
+- Add BOOT_ORDER / BOOT_A_LEFT / BOOT_B_LEFT defaults in board env
+- Add do_ecu150v2_rauc_boot() C function: validate BOOT_ORDER, clamp
+  LEFT counters, build fixed bootargs, ext4load + booti
+- In board_late_init(), force bootcmd = "run sr_ir_v2_cmd; run
+  ecu150v2_rauc_boot" on every boot so saved env can never inject a
+  different boot path.
+
+Upstream-Status: Inappropriate [not-applicable]
+---
+ board/freescale/imx8mp_evk/imx8mp_evk.c   | 142 ++++++++++++++++++++++
+ board/freescale/imx8mp_evk/imx8mp_evk.env |   7 ++
+ 2 files changed, 149 insertions(+)
+
+diff --git a/board/freescale/imx8mp_evk/imx8mp_evk.c b/board/freescale/imx8mp_evk/imx8mp_evk.c
+index 306c8377edd..c98ee73d7d0 100644
+--- a/board/freescale/imx8mp_evk/imx8mp_evk.c
++++ b/board/freescale/imx8mp_evk/imx8mp_evk.c
+@@ -31,6 +31,7 @@
+ #include <fuse.h>
+ #include <i2c.h>
+ #include <mmc.h>
++#include <command.h>
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+@@ -660,6 +661,140 @@ static void system_reset_gpio(void)
+ 	gpio_set_output(M2B_RESET_GPIO, 1);
+ }
+ 
++/* ========== ECU-150v2: RAUC A/B Boot Policy ========== */
++#define RAUC_KERNEL_ADDR	0x40480000UL
++#define RAUC_FDT_ADDR		0x43000000UL
++#define RAUC_KERNEL_PATH	"/boot/Image"
++#define RAUC_FDT_PATH		"/boot/imx8mp-evk.dtb"
++#define RAUC_MAX_TRIES		3u
++
++struct rauc_slot {
++	char         name;       /* 'A' or 'B' */
++	const char  *left_var;   /* env var holding remaining tries */
++	unsigned int part;       /* mmc partition number */
++};
++
++static const struct rauc_slot rauc_slots[] = {
++	{ 'A', "BOOT_A_LEFT", 1 },
++	{ 'B', "BOOT_B_LEFT", 2 },
++};
++
++static const struct rauc_slot *rauc_find_slot(char name)
++{
++	int i;
++
++	for (i = 0; i < (int)ARRAY_SIZE(rauc_slots); i++)
++		if (rauc_slots[i].name == name)
++			return &rauc_slots[i];
++	return NULL;
++}
++
++static unsigned int rauc_get_mmc_dev(void)
++{
++	return (unsigned int)mmc_get_env_dev();
++}
++
++/*
++ * Build and run commands from C-code constants + a validated unsigned
++ * partition number + a hardware-derived mmc device number only.
++ */
++static int rauc_try_slot(const struct rauc_slot *s)
++{
++	char cmd[160];
++	unsigned int mmc_dev = rauc_get_mmc_dev();
++	ulong left;
++
++	left = env_get_ulong(s->left_var, 10, 0);
++	if (left == 0 || left > RAUC_MAX_TRIES) {
++		printf("RAUC: slot %c has no tries left (%s=%lu), skip\n",
++		       s->name, s->left_var, left);
++		return -1;
++	}
++
++	/* Decrement tries first and persist, so a crash mid-boot still counts. */
++	env_set_ulong(s->left_var, left - 1);
++	env_save();
++
++	printf("RAUC: trying slot %c (root=mmcblk%up%u, tries left after: %lu)\n",
++	       s->name, mmc_dev, s->part, left - 1);
++
++	snprintf(cmd, sizeof(cmd),
++		 "setenv bootargs root=/dev/mmcblk%up%u rootwait rw console=ttymxc1,115200",
++		 mmc_dev, s->part);
++	if (run_command(cmd, 0))
++		return -1;
++
++	snprintf(cmd, sizeof(cmd), "ext4load mmc %u:%u 0x%lx %s",
++		 mmc_dev, s->part, RAUC_KERNEL_ADDR, RAUC_KERNEL_PATH);
++	if (run_command(cmd, 0))
++		return -1;
++
++	snprintf(cmd, sizeof(cmd), "ext4load mmc %u:%u 0x%lx %s",
++		 mmc_dev, s->part, RAUC_FDT_ADDR, RAUC_FDT_PATH);
++	if (run_command(cmd, 0))
++		return -1;
++
++	snprintf(cmd, sizeof(cmd), "booti 0x%lx - 0x%lx",
++		 RAUC_KERNEL_ADDR, RAUC_FDT_ADDR);
++	return run_command(cmd, 0);   /* booti normally never returns */
++}
++
++int do_ecu150v2_rauc_boot(void)
++{
++	const char *order;
++	char order_buf[8];
++	const struct rauc_slot *slot;
++	int i, n;
++
++	/*
++	 * Preserve NXP i.MX8MP silicon-revision / DT fixup.
++	 * Ignore failure so an undefined sr_ir_v2_cmd never bricks boot.
++	 */
++	(void)run_command("run sr_ir_v2_cmd", 0);
++
++	order = env_get("BOOT_ORDER");
++	if (!order || !*order || strlen(order) >= sizeof(order_buf)) {
++		printf("RAUC: BOOT_ORDER invalid, falling back to \"A B\"\n");
++		order = "A B";
++	}
++	strncpy(order_buf, order, sizeof(order_buf) - 1);
++	order_buf[sizeof(order_buf) - 1] = '\0';
++
++	n = strlen(order_buf);
++	for (i = 0; i < n; i++) {
++		char c = order_buf[i];
++
++		if (c == ' ' || c == '\t')
++			continue;
++
++		slot = rauc_find_slot(c);
++		if (!slot) {
++			printf("RAUC: unknown slot '%c' in BOOT_ORDER, skip\n", c);
++			continue;
++		}
++
++		(void)rauc_try_slot(slot);
++		printf("RAUC: slot %c boot returned, trying next\n", slot->name);
++	}
++
++	printf("RAUC: all slots exhausted, resetting board\n");
++	do_reset(NULL, 0, 0, NULL);
++	return 1;
++}
++
++static int do_ecu150v2_rauc_boot_cmd(struct cmd_tbl *cmdtp, int flag,
++				     int argc, char *const argv[])
++{
++	return do_ecu150v2_rauc_boot();
++}
++
++U_BOOT_CMD(
++	ecu150v2_rauc_boot, 1, 0, do_ecu150v2_rauc_boot_cmd,
++	"Run ECU150v2 RAUC A/B boot policy",
++	"(no args) - select slot per BOOT_ORDER / BOOT_X_LEFT, decrement\n"
++	"           left counter, build bootargs, ext4load + booti."
++);
++
+ /* ========== ECU-150v2: EEPROM MAC Address ========== */
+ static int ecu_setup_mac_from_eeprom(void)
+ {
+@@ -730,6 +865,13 @@ int board_late_init(void)
+ 	puts("DeviceName is ECU150V2.\n");
+ 	env_set("devicename", "ecu150v2");
+ 
++	/*
++	 * Force bootcmd to the signed-in-C RAUC command on every boot.
++	 * board_late_init() runs before main_loop()/autoboot, so this
++	 * overwrite is what autoboot will actually execute.
++	 */
++	env_set("bootcmd", "ecu150v2_rauc_boot");
++
+ 	return 0;
+ }
+ 
+diff --git a/board/freescale/imx8mp_evk/imx8mp_evk.env b/board/freescale/imx8mp_evk/imx8mp_evk.env
+index 97f9eb52b25..52ecabc9c0a 100644
+--- a/board/freescale/imx8mp_evk/imx8mp_evk.env
++++ b/board/freescale/imx8mp_evk/imx8mp_evk.env
+@@ -133,5 +133,12 @@ bsp_bootcmd=setenv opteeoverlay yes;echo Running BSP bootcmd ...;
+ 			run emmcboot;
+ 		fi;
+ 	fi;
++
++/* RAUC A/B boot state variables.
++ * Managed exclusively by RAUC userspace (fw_setenv) and the C boot policy.
++ * Do NOT set bootcmd here; boot path is hardcoded in board_run_command(). */
++BOOT_ORDER=A B
++BOOT_A_LEFT=3
++BOOT_B_LEFT=3
+ #endif
+ #endif

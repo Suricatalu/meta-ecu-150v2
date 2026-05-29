@@ -1,0 +1,5 @@
+# RAUC signing keys live under keys/ and must never be committed.
+# Ignore everything inside keys/ except the .gitignore marker itself,
+# so the directory shows up in git but no key material can be staged.
+keys/*
+!keys/.gitignore
