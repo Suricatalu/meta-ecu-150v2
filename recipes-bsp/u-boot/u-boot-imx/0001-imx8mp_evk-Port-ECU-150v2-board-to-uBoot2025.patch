@@ -1,8 +1,7 @@
-From 68a151760b3c56375b7234524be6f509b0681137 Mon Sep 17 00:00:00 2001
+From 4cec9dc71a5337c0336dc75f274cd4b6c028f8dc Mon Sep 17 00:00:00 2001
 From: "suricata.lu" <suricata.lu@gmail.com>
 Date: Tue, 14 Apr 2026 14:09:20 +0800
-Subject: [PATCH 1/2] imx8mp_evk: Port ECU-150v2 board support to U-Boot
- 2025.04
+Subject: [PATCH] imx8mp_evk: Port ECU-150v2 board support to U-Boot 2025.04
 
 - defconfig: disable TCPC/Video, simplify BOOTCOMMAND, add SYSINFO/SMBIOS
 - header: ECU DRAM layout (4GB default), EEPROM MAC defines
@@ -15,11 +14,11 @@ Upstream-Status: Inappropriate [embedded board port]
 ---
  arch/arm/dts/imx8mp-evk-u-boot.dtsi           | 134 +--
  board/freescale/imx8mp_evk/imx8mp_evk.c       | 217 ++++-
- board/freescale/imx8mp_evk/imx8mp_evk.env     |  41 +-
+ board/freescale/imx8mp_evk/imx8mp_evk.env     |  45 +-
  configs/imx8mp_evk_defconfig                  |  14 +-
  .../src/arm64/freescale/imx8mp-evk.dts        | 775 ++----------------
  include/configs/imx8mp_evk.h                  |  24 +-
- 6 files changed, 337 insertions(+), 868 deletions(-)
+ 6 files changed, 339 insertions(+), 870 deletions(-)
 
 diff --git a/arch/arm/dts/imx8mp-evk-u-boot.dtsi b/arch/arm/dts/imx8mp-evk-u-boot.dtsi
 index 6136424f5c7..4f238818f83 100644
@@ -481,9 +480,20 @@ index 294049ff9d2..306c8377edd 100644
  }
  
 diff --git a/board/freescale/imx8mp_evk/imx8mp_evk.env b/board/freescale/imx8mp_evk/imx8mp_evk.env
-index 25bd2b39a8f..97f9eb52b25 100644
+index 25bd2b39a8f..215d9ea1e75 100644
 --- a/board/freescale/imx8mp_evk/imx8mp_evk.env
 +++ b/board/freescale/imx8mp_evk/imx8mp_evk.env
+@@ -53,8 +53,8 @@ boot_targets=usb0 mmc1 mmc2 dhcp
+ bootm_size=0x10000000
+ console=ttymxc1,115200
+ splashimage=0x50000000
+-fdt_addr_r=0x43000000
+-fdt_addr=0x43000000
++fdt_addr_r=0x48000000
++fdt_addr=0x48000000
+ fdt_high=0xffffffffffffffff
+ fdtfile=CONFIG_DEFAULT_FDT_FILE
+ image=Image
 @@ -64,12 +64,23 @@ mmcpart=1
  mmcroot=/dev/mmcblk1p2 rootwait rw
  mmcautodetect=yes
@@ -1610,6 +1620,3 @@ index ce6218fad73..7b1d2983a91 100644
  #ifdef CONFIG_IMX_MATTER_TRUSTY
  #define NS_ARCH_ARM64 1
  #endif
--- 
-2.43.0
-
