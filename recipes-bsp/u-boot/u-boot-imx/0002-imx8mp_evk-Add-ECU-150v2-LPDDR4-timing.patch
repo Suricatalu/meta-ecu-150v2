@@ -1,8 +1,7 @@
-From 618c267fca9b9eb94219e32cdde50ede4e63b53b Mon Sep 17 00:00:00 2001
+From a7ef7538d02da4744024fbd3f912096c6d63701a Mon Sep 17 00:00:00 2001
 From: "suricata.lu" <suricata.lu@gmail.com>
 Date: Wed, 15 Apr 2026 14:51:01 +0800
-Subject: [PATCH 2/2] imx8mp_evk: Add ECU-150v2 LPDDR4 timing and SPL DRAM
- fallback
+Subject: [PATCH] imx8mp_evk: Add ECU-150v2 LPDDR4 timing and SPL DRAM fallback
 
 Upstream-Status: Inappropriate [embedded board port]
 ---
@@ -1137,6 +1136,3 @@ index 7a128e2f726..d2302dee8e4 100644
  }
  
  void spl_board_init(void)
--- 
-2.43.0
-
