@@ -1,23 +1,25 @@
-From 32bd06d8f40c92610ecd392806469bc6240001c4 Mon Sep 17 00:00:00 2001
+From 9cde47778397bf199dddd14b68a44a620b84212e Mon Sep 17 00:00:00 2001
 From: "suricata.lu" <suricata.lu@gmail.com>
 Date: Tue, 26 May 2026 16:19:08 +0800
-Subject: [PATCH] imx8mp_evk: Add RAUC A/B support
+Subject: [PATCH] imx8mp_evk: Add RAUC A/B support but default not enabled
 
+- Add do_ecu150v2_boot() C function: load kernel + FDT from that
+  rootfs ext4 partition's /boot, then booti.
 - Add BOOT_ORDER / BOOT_A_LEFT / BOOT_B_LEFT defaults in board env
 - Add do_ecu150v2_rauc_boot() C function: validate BOOT_ORDER, clamp
   LEFT counters, build fixed bootargs, ext4load + booti
 - In board_late_init(), force bootcmd = "run sr_ir_v2_cmd; run
-  ecu150v2_rauc_boot" on every boot so saved env can never inject a
+  ecu150v2_boot" on every boot so saved env can never inject a
   different boot path.
 
 Upstream-Status: Inappropriate [not-applicable]
 ---
- board/freescale/imx8mp_evk/imx8mp_evk.c   | 145 ++++++++++++++++++++++
- board/freescale/imx8mp_evk/imx8mp_evk.env |   7 ++
- 2 files changed, 152 insertions(+)
+ board/freescale/imx8mp_evk/imx8mp_evk.c   | 176 ++++++++++++++++++++++
+ board/freescale/imx8mp_evk/imx8mp_evk.env |   7 +
+ 2 files changed, 183 insertions(+)
 
 diff --git a/board/freescale/imx8mp_evk/imx8mp_evk.c b/board/freescale/imx8mp_evk/imx8mp_evk.c
-index 306c8377edd..9dd03addbe6 100644
+index 306c8377edd..872b08859ff 100644
 --- a/board/freescale/imx8mp_evk/imx8mp_evk.c
 +++ b/board/freescale/imx8mp_evk/imx8mp_evk.c
 @@ -31,6 +31,7 @@
@@ -28,20 +30,80 @@ index 306c8377edd..9dd03addbe6 100644
  
  DECLARE_GLOBAL_DATA_PTR;
  
-@@ -660,6 +661,143 @@ static void system_reset_gpio(void)
+@@ -660,6 +661,174 @@ static void system_reset_gpio(void)
  	gpio_set_output(M2B_RESET_GPIO, 1);
  }
  
-+/* ========== ECU-150v2: RAUC A/B Boot Policy ========== */
-+#define RAUC_KERNEL_ADDR	0x40480000UL
++/* ========== ECU-150v2: Boot Policy ========== */
++#define BOOT_KERNEL_ADDR	0x40480000UL
 +/* FDT must sit above the relocated kernel. A 45 MB initramfs-bundled Image
 + * relocates to 0x40600000 and ends near 0x43370000, overwriting the legacy
 + * 0x43000000 FDT address. 0x48000000 leaves a wide margin within 4 GiB DRAM. */
-+#define RAUC_FDT_ADDR		0x48000000UL
-+#define RAUC_KERNEL_PATH	"/boot/Image"
-+#define RAUC_FDT_PATH		"/boot/imx8mp-evk.dtb"
-+#define RAUC_MAX_TRIES		3u
++#define BOOT_FDT_ADDR		0x48000000UL
++#define BOOT_KERNEL_PATH	"/boot/Image"
++#define BOOT_FDT_PATH		"/boot/imx8mp-evk.dtb"
++#define BOOT_MAX_TRIES		3u
 +
++/*
++ * Common low-level boot: build fixed bootargs for the given rootfs partition,
++ * load kernel + FDT from that rootfs ext4 partition's /boot, then booti.
++ * Returns only on failure (booti never returns on success).
++ */
++static int boot_load_and_go(unsigned int mmc_dev, unsigned int part)
++{
++	char cmd[160];
++
++	snprintf(cmd, sizeof(cmd),
++		 "setenv bootargs root=/dev/mmcblk%up%u rootwait rw console=ttymxc1,115200",
++		 mmc_dev, part);
++	if (run_command(cmd, 0))
++		return -1;
++
++	snprintf(cmd, sizeof(cmd), "ext4load mmc %u:%u 0x%lx %s",
++		 mmc_dev, part, BOOT_KERNEL_ADDR, BOOT_KERNEL_PATH);
++	if (run_command(cmd, 0))
++		return -1;
++
++	snprintf(cmd, sizeof(cmd), "ext4load mmc %u:%u 0x%lx %s",
++		 mmc_dev, part, BOOT_FDT_ADDR, BOOT_FDT_PATH);
++	if (run_command(cmd, 0))
++		return -1;
++
++	snprintf(cmd, sizeof(cmd), "booti 0x%lx - 0x%lx",
++		 BOOT_KERNEL_ADDR, BOOT_FDT_ADDR);
++	return run_command(cmd, 0);
++}
++
++/* ---- Non-RAUC command: single rootfs, no counters, neutral log ---- */
++int do_ecu150v2_boot(void)
++{
++	unsigned int mmc_dev = (unsigned int)mmc_get_env_dev();
++	unsigned int part = 1;   /* single rootfs partition (mmcblkXp1) */
++
++	(void)run_command("run sr_ir_v2_cmd", 0);
++
++	printf("BOOT: single-rootfs mode, booting root=mmcblk%up%u (A/B disabled)\n",
++	       mmc_dev, part);
++	(void)boot_load_and_go(mmc_dev, part);
++
++	printf("BOOT: rootfs boot failed, dropping to U-Boot prompt\n");
++	return 1;
++}
++
++static int do_ecu150v2_boot_cmd(struct cmd_tbl *cmdtp, int flag,
++				int argc, char *const argv[])
++{
++	return do_ecu150v2_boot();
++}
++
++U_BOOT_CMD(
++	ecu150v2_boot, 1, 0, do_ecu150v2_boot_cmd,
++	"Boot ECU150v2 single rootfs (non-RAUC)",
++	"(no args) - load /boot/Image + /boot/imx8mp-evk.dtb from rootfs p1\n"
++	"           and booti, without touching any A/B try counter."
++);
++
++/* ---- RAUC A/B path ---- */
 +struct rauc_slot {
 +	char         name;       /* 'A' or 'B' */
 +	const char  *left_var;   /* env var holding remaining tries */
@@ -63,23 +125,12 @@ index 306c8377edd..9dd03addbe6 100644
 +	return NULL;
 +}
 +
-+static unsigned int rauc_get_mmc_dev(void)
-+{
-+	return (unsigned int)mmc_get_env_dev();
-+}
-+
-+/*
-+ * Build and run commands from C-code constants + a validated unsigned
-+ * partition number + a hardware-derived mmc device number only.
-+ */
 +static int rauc_try_slot(const struct rauc_slot *s)
 +{
-+	char cmd[160];
-+	unsigned int mmc_dev = rauc_get_mmc_dev();
-+	ulong left;
++	unsigned int mmc_dev = (unsigned int)mmc_get_env_dev();
++	ulong left = env_get_ulong(s->left_var, 10, 0);
 +
-+	left = env_get_ulong(s->left_var, 10, 0);
-+	if (left == 0 || left > RAUC_MAX_TRIES) {
++	if (left == 0 || left > BOOT_MAX_TRIES) {
 +		printf("RAUC: slot %c has no tries left (%s=%lu), skip\n",
 +		       s->name, s->left_var, left);
 +		return -1;
@@ -92,25 +143,7 @@ index 306c8377edd..9dd03addbe6 100644
 +	printf("RAUC: trying slot %c (root=mmcblk%up%u, tries left after: %lu)\n",
 +	       s->name, mmc_dev, s->part, left - 1);
 +
-+	snprintf(cmd, sizeof(cmd),
-+		 "setenv bootargs root=/dev/mmcblk%up%u rootwait rw console=ttymxc1,115200",
-+		 mmc_dev, s->part);
-+	if (run_command(cmd, 0))
-+		return -1;
-+
-+	snprintf(cmd, sizeof(cmd), "ext4load mmc %u:%u 0x%lx %s",
-+		 mmc_dev, s->part, RAUC_KERNEL_ADDR, RAUC_KERNEL_PATH);
-+	if (run_command(cmd, 0))
-+		return -1;
-+
-+	snprintf(cmd, sizeof(cmd), "ext4load mmc %u:%u 0x%lx %s",
-+		 mmc_dev, s->part, RAUC_FDT_ADDR, RAUC_FDT_PATH);
-+	if (run_command(cmd, 0))
-+		return -1;
-+
-+	snprintf(cmd, sizeof(cmd), "booti 0x%lx - 0x%lx",
-+		 RAUC_KERNEL_ADDR, RAUC_FDT_ADDR);
-+	return run_command(cmd, 0);   /* booti normally never returns */
++	return boot_load_and_go(mmc_dev, s->part);
 +}
 +
 +int do_ecu150v2_rauc_boot(void)
@@ -121,8 +154,8 @@ index 306c8377edd..9dd03addbe6 100644
 +	int i, n;
 +
 +	/*
-+	 * Preserve NXP i.MX8MP silicon-revision / DT fixup.
-+	 * Ignore failure so an undefined sr_ir_v2_cmd never bricks boot.
++	 * Preserve NXP i.MX8MP silicon-revision / DT fixup. Ignore failure so an
++	 * undefined sr_ir_v2_cmd never bricks boot.
 +	 */
 +	(void)run_command("run sr_ir_v2_cmd", 0);
 +
@@ -172,7 +205,7 @@ index 306c8377edd..9dd03addbe6 100644
  /* ========== ECU-150v2: EEPROM MAC Address ========== */
  static int ecu_setup_mac_from_eeprom(void)
  {
-@@ -730,6 +868,13 @@ int board_late_init(void)
+@@ -730,6 +899,13 @@ int board_late_init(void)
  	puts("DeviceName is ECU150V2.\n");
  	env_set("devicename", "ecu150v2");
  
@@ -181,7 +214,7 @@ index 306c8377edd..9dd03addbe6 100644
 +	 * board_late_init() runs before main_loop()/autoboot, so this
 +	 * overwrite is what autoboot will actually execute.
 +	 */
-+	env_set("bootcmd", "ecu150v2_rauc_boot");
++	env_set("bootcmd", "ecu150v2_boot");
 +
  	return 0;
  }

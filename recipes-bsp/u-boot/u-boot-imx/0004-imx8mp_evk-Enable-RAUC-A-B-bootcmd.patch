@@ -1,0 +1,23 @@
+From b4d925bf2d6d21edb6c8f5d6bf1cb24f946796f9 Mon Sep 17 00:00:00 2001
+From: "suricata.lu" <suricata.lu@gmail.com>
+Date: Sun, 28 Jun 2026 18:35:02 +0800
+Subject: [PATCH] imx8mp_evk: Enable RAUC A/B bootcmd
+
+Upstream-Status: Inappropriate [not-applicable]
+---
+ board/freescale/imx8mp_evk/imx8mp_evk.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/board/freescale/imx8mp_evk/imx8mp_evk.c b/board/freescale/imx8mp_evk/imx8mp_evk.c
+index 872b08859ff..976c569714a 100644
+--- a/board/freescale/imx8mp_evk/imx8mp_evk.c
++++ b/board/freescale/imx8mp_evk/imx8mp_evk.c
+@@ -904,7 +904,7 @@ int board_late_init(void)
+ 	 * board_late_init() runs before main_loop()/autoboot, so this
+ 	 * overwrite is what autoboot will actually execute.
+ 	 */
+-	env_set("bootcmd", "ecu150v2_boot");
++	env_set("bootcmd", "ecu150v2_rauc_boot");
+ 
+ 	return 0;
+ }
