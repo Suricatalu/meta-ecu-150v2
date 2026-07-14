@@ -32,6 +32,9 @@ do_install:append() {
     # Replace @RAUC_SYSTEM_COMPATIBLE@ placeholder with the value from ecu150v2-rauc.inc
     sed -i "s/@RAUC_SYSTEM_COMPATIBLE@/${RAUC_SYSTEM_COMPATIBLE}/g" \
         ${D}${bindir}/rauc-setup-env.sh
+    
+    sed -i "s/@RAUC_BUNDLE_FORMATS@/${RAUC_BUNDLE_FORMAT}/g" \
+        ${D}${bindir}/rauc-setup-env.sh
 
     install -d ${D}${systemd_system_unitdir}
     install -m 0644 ${UNPACKDIR}/rauc-setup-env.service \

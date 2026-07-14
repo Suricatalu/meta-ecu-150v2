@@ -7,6 +7,8 @@ SRC_URI:append:ecu150v2 = " \
             file://rauc.cfg \
             "
 
+DELTA_KERNEL_DEFCONFIG:append:ecu150v2 = " rauc.cfg"
+
 # ECU-150v2 patches imx8mp-evk.dts heavily (camera/audio/LVDS nodes removed),
 # which breaks every downstream NXP EVK overlay/variant DTB that #include's it.
 # Drop those variants from the kernel DTB build set so they do not fail compile.
