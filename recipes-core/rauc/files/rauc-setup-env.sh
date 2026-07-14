@@ -43,7 +43,7 @@ cat > /etc/rauc/system.conf <<EOF
 [system]
 compatible=@RAUC_SYSTEM_COMPATIBLE@
 bootloader=uboot
-bundle-formats=plain
+bundle-formats=@RAUC_BUNDLE_FORMATS@
 statusfile=/data/rauc.status
 data-directory=/data/rauc
 
