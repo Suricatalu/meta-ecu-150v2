@@ -11,3 +11,5 @@ SRC_URI:append:ecu150v2 = " \
 # enabled (RAUC_ENABLED = "1" in local.conf, default "0" in ecu150v2-rauc.inc).
 SRC_URI:append:ecu150v2 = "${@' file://0004-imx8mp_evk-Enable-RAUC-A-B-bootcmd.patch' if d.getVar('RAUC_ENABLED') == '1' else ''}"
 
+# HAB support: hab_status / hab_auth_img commands in U-Boot.
+SRC_URI:append:ecu150v2 = "${@' file://hab.cfg' if d.getVar('SECURE_BOOT_ENABLED') == '1' else ''}"

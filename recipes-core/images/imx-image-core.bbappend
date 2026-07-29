@@ -2,42 +2,89 @@ IMAGE_INSTALL:append = " kernel-devicetree"
 IMAGE_FSTYPES:append = " ext4"
 
 # ---------------------------------------------------------------------------
-# Optionally make the rootfs /boot/Image the *initramfs-bundled* kernel.
+# Put the right kernel into the rootfs /boot/Image.
 #
-# Controlled by OVERLAY_INITRAMFS_ROOT (default "0", see ecu150v2-overlay.inc);
-# enable in local.conf:
-#     OVERLAY_INITRAMFS_ROOT = "1"
+# There is no separate boot partition on ECU-150v2: U-Boot ext4loads the
+# kernel straight out of the rootfs (/boot/Image, see 0003-Boot-Policy), so
+# whatever lands there is what boots. By default that is the kernel
+# package's own Image, which is UNSIGNED and does not contain the overlay
+# initramfs.
 #
-# Fix: during image assembly, overwrite the rootfs /boot/Image with the
-# bundled (initramfs) kernel from the deploy dir.、
+# Two independent toggles decide what has to replace it:
 #
-# The whole block is a no-op unless OVERLAY_INITRAMFS_ROOT == "1", so leaving
-# this bbappend in place with the toggle off keeps the normal bare kernel.
+#   SECURE_BOOT   OVERLAY   /boot/Image must be
+#   -----------   -------   ------------------------------------------------
+#        0           0      untouched (kernel package's Image is correct)
+#        0           1      Image-initramfs-${MACHINE}.bin         unsigned bundled
+#        1           0      signed-Image-${MACHINE}.bin            signed plain
+#        1           1      signed-Image-initramfs-${MACHINE}.bin  signed bundled
+#
+# WHY BOTH SIGNED CASES MATTER: with SECURE_BOOT_ENABLED = "1" the bootloader
+# is built with CONFIG_IMX_HAB=y and NXP's booti authenticates the kernel on
+# every boot -- open devices included. An unsigned /boot/Image does not boot
+# at all, whether or not the overlay feature is in play. Background:
+# docs/0068_add_secure_boot/issue_overlayfs_secure_boot_compatibale.md
+#
+# The whole block is a no-op when both toggles are off, so leaving this
+# bbappend in place costs a plain build nothing.
 # ---------------------------------------------------------------------------
 
-install_initramfs_bundled_kernel() {
-    bundled="${DEPLOY_DIR_IMAGE}/Image-initramfs-${MACHINE}.bin"
-    if [ ! -e "${bundled}" ]; then
-        bbfatal "OVERLAY_INITRAMFS_ROOT=1 but bundled kernel '${bundled}' " \
-                "not found. Is INITRAMFS_IMAGE_BUNDLE = \"1\" set?"
+install_rootfs_boot_kernel() {
+    if [ "${SECURE_BOOT_ENABLED}" = "1" ]; then
+        if [ "${OVERLAY_INITRAMFS_ROOT}" = "1" ]; then
+            src="${DEPLOY_DIR_IMAGE}/signed-Image-initramfs-${MACHINE}.bin"
+            hint="produced by the linux-imx-signature bbappend in meta-ecu150v2"
+        else
+            src="${DEPLOY_DIR_IMAGE}/signed-Image-${MACHINE}.bin"
+            hint="produced by meta-secure-boot's linux-imx-signature"
+        fi
+    elif [ "${OVERLAY_INITRAMFS_ROOT}" = "1" ]; then
+        src="${DEPLOY_DIR_IMAGE}/Image-initramfs-${MACHINE}.bin"
+        hint="is INITRAMFS_IMAGE_BUNDLE = \"1\" set?"
+    else
+        # Neither toggle: the kernel package's own /boot/Image is correct.
+        return
     fi
 
-    # Drop the bare-kernel symlink and its target, then drop the bundled kernel
-    # in as the real /boot/Image that U-Boot will ext4load + booti.
+    if [ ! -e "${src}" ]; then
+        bbfatal "cannot install /boot/Image: '${src}' not found (${hint})"
+    fi
+
+    # Drop the kernel package's symlink and the versioned file it points at
+    # (saves that space in every RAUC slot), then install the real file.
     if [ -L "${IMAGE_ROOTFS}/boot/Image" ]; then
-        # Remove the versioned bare kernel the symlink points at (saves space
-        # per RAUC slot); ignore failure if the name ever changes.
         target="$(readlink "${IMAGE_ROOTFS}/boot/Image")"
         rm -f "${IMAGE_ROOTFS}/boot/${target}" || true
     fi
     rm -f "${IMAGE_ROOTFS}/boot/Image"
-    install -m 0644 "${bundled}" "${IMAGE_ROOTFS}/boot/Image"
+    install -m 0644 "${src}" "${IMAGE_ROOTFS}/boot/Image"
+
+    bbnote "installed /boot/Image from ${src}"
 }
 
-# Only wire up the override + dependency when the toggle is on.
 python () {
-    if d.getVar('OVERLAY_INITRAMFS_ROOT') == '1':
+    secure = d.getVar('SECURE_BOOT_ENABLED') == '1'
+    overlay = d.getVar('OVERLAY_INITRAMFS_ROOT') == '1'
+
+    # Neither toggle: the kernel package's own /boot/Image is already correct.
+    if not (secure or overlay):
+        return
+
+    # The unsigned bundled kernel is deployed by the kernel recipe itself.
+    if overlay:
         d.appendVarFlag('do_rootfs', 'depends', ' virtual/kernel:do_deploy')
-        d.appendVar('ROOTFS_POSTPROCESS_COMMAND',
-                    ' install_initramfs_bundled_kernel;')
+
+    # Signed artifacts come from linux-imx-signature (the plain one from the
+    # NXP recipe, the bundled one from our bbappend). Without this dependency
+    # do_rootfs races the signing and bbfatal's on a missing file.
+    if secure:
+        d.appendVarFlag('do_rootfs', 'depends', ' linux-imx-signature:do_deploy')
+
+    d.appendVar('ROOTFS_POSTPROCESS_COMMAND', ' install_rootfs_boot_kernel;')
 }
+
+# Secure boot: also make image generation depend on imx-boot-signature so the
+# bootloader's imx-boot symlink / imx-boot.tagged already point at signed-*
+# by the time wic assembles the image (the .wks rawcopy reads imx-boot.tagged,
+# not the imx-boot symlink -- see plan section 2.2).
+EXTRA_IMAGEDEPENDS:append = "${@' imx-boot-signature' if d.getVar('SECURE_BOOT_ENABLED') == '1' else ''}"
