@@ -1,18 +1,17 @@
-From 1c4995feefd0b0bddee17d1da7cad49d07004ea0 Mon Sep 17 00:00:00 2001
+From 3c48dcbc04284d1afc0e168a76ae76ca5e8ba758 Mon Sep 17 00:00:00 2001
 From: "suricata.lu" <suricata.lu@gmail.com>
 Date: Mon, 20 Apr 2026 15:02:40 +0800
-Subject: [PATCH 1/3] Port ECU-150v2 to linux-imx 6.12 on deviceTree and
- defconfig
+Subject: [PATCH] Port ECU-150v2 to linux-imx 6.12 on deviceTree and defconfig
 
 Upstream-Status: Inappropriate [embedded board port]
 ---
- arch/arm64/boot/dts/freescale/imx8mp-evk.dts | 829 +++++--------------
+ arch/arm64/boot/dts/freescale/imx8mp-evk.dts | 828 +++++--------------
  arch/arm64/boot/dts/freescale/imx8mp.dtsi    |   8 +-
- arch/arm64/configs/imx_v8_defconfig          |  15 +-
- 3 files changed, 245 insertions(+), 607 deletions(-)
+ arch/arm64/configs/imx_v8_defconfig          |  19 +-
+ 3 files changed, 247 insertions(+), 608 deletions(-)
 
 diff --git a/arch/arm64/boot/dts/freescale/imx8mp-evk.dts b/arch/arm64/boot/dts/freescale/imx8mp-evk.dts
-index 26435ca5e171..fc6129eb5937 100644
+index 26435ca5e171..827bdfa24a9e 100644
 --- a/arch/arm64/boot/dts/freescale/imx8mp-evk.dts
 +++ b/arch/arm64/boot/dts/freescale/imx8mp-evk.dts
 @@ -10,9 +10,18 @@
@@ -363,7 +362,7 @@ index 26435ca5e171..fc6129eb5937 100644
  };
  
  &i2c1 {
-@@ -535,93 +488,52 @@ &i2c2 {
+@@ -535,93 +488,51 @@ &i2c2 {
  	pinctrl-0 = <&pinctrl_i2c2>;
  	status = "okay";
  
@@ -391,11 +390,10 @@ index 26435ca5e171..fc6129eb5937 100644
 -				remote-endpoint = <&lvds_out>;
 -			};
 -		};
-+	// TPM
-+	st33htpi: st33htpi@2e {
-+        compatible = "infineon,slb9673";
-+		reg = <0x2e>;
-+        clock-frequency = <400000>;
++	// TPM (Other product line use st33htpi naming, which maybe not correct, but ECU-150v2 use tpm naming)
++	tpm: tpm@2e {
++        compatible = "infineon,slb9673", "tcg,tpm-tis-i2c";
++		 reg = <0x2e>;
  	};
  
 -	ov5640_0: ov5640_mipi@3c {
@@ -497,7 +495,7 @@ index 26435ca5e171..fc6129eb5937 100644
  };
  
  &i2c3 {
-@@ -630,87 +542,14 @@ &i2c3 {
+@@ -630,87 +541,14 @@ &i2c3 {
  	pinctrl-0 = <&pinctrl_i2c3>;
  	status = "okay";
  
@@ -590,7 +588,7 @@ index 26435ca5e171..fc6129eb5937 100644
  };
  
  &hdmi_pavi {
-@@ -740,47 +579,6 @@ &lcdif3 {
+@@ -740,47 +578,6 @@ &lcdif3 {
  	thres-high = <3 4>;             /* (FIFO * 3 / 4) */
  };
  
@@ -638,7 +636,7 @@ index 26435ca5e171..fc6129eb5937 100644
  &pcie_phy {
  	fsl,refclk-pad-mode = <IMX8_PCIE_REFCLK_PAD_INPUT>;
  	clocks = <&pcie0_refclk>;
-@@ -791,28 +589,9 @@ &pcie_phy {
+@@ -791,28 +588,9 @@ &pcie_phy {
  &pcie {
  	pinctrl-names = "default";
  	pinctrl-0 = <&pinctrl_pcie0>;
@@ -669,7 +667,7 @@ index 26435ca5e171..fc6129eb5937 100644
  	status = "okay";
  };
  
-@@ -827,20 +606,6 @@ &sai2 {
+@@ -827,20 +605,6 @@ &sai2 {
  	status = "okay";
  };
  
@@ -690,7 +688,7 @@ index 26435ca5e171..fc6129eb5937 100644
  &snvs_pwrkey {
  	status = "okay";
  };
-@@ -854,23 +619,49 @@ &sdma2 {
+@@ -854,23 +618,49 @@ &sdma2 {
  	status = "okay";
  };
  
@@ -749,7 +747,7 @@ index 26435ca5e171..fc6129eb5937 100644
  	status = "okay";
  };
  
-@@ -889,7 +680,7 @@ &usb3_0 {
+@@ -889,7 +679,7 @@ &usb3_0 {
  };
  
  &usb_dwc3_0 {
@@ -758,7 +756,7 @@ index 26435ca5e171..fc6129eb5937 100644
  	hnp-disable;
  	srp-disable;
  	adp-disable;
-@@ -898,12 +689,6 @@ &usb_dwc3_0 {
+@@ -898,12 +688,6 @@ &usb_dwc3_0 {
  	snps,dis-u1-entry-quirk;
  	snps,dis-u2-entry-quirk;
  	status = "okay";
@@ -771,7 +769,7 @@ index 26435ca5e171..fc6129eb5937 100644
  };
  
  &usb3_phy1 {
-@@ -922,15 +707,6 @@ &usb_dwc3_1 {
+@@ -922,15 +706,6 @@ &usb_dwc3_1 {
  	status = "okay";
  };
  
@@ -787,7 +785,7 @@ index 26435ca5e171..fc6129eb5937 100644
  &usdhc2 {
  	assigned-clocks = <&clk IMX8MP_CLK_USDHC2>;
  	assigned-clock-rates = <400000000>;
-@@ -972,12 +748,6 @@ &iomuxc {
+@@ -972,12 +747,6 @@ &iomuxc {
  	pinctrl-names = "default";
  	pinctrl-0 = <&pinctrl_hog>;
  
@@ -800,7 +798,7 @@ index 26435ca5e171..fc6129eb5937 100644
  	pinctrl_ecspi2: ecspi2grp {
  		fsl,pins = <
  			MX8MP_IOMUXC_ECSPI2_SCLK__ECSPI2_SCLK		0x82
-@@ -1046,32 +816,21 @@ MX8MP_IOMUXC_SAI5_RXD3__CAN2_TX         0x154
+@@ -1046,32 +815,21 @@ MX8MP_IOMUXC_SAI5_RXD3__CAN2_TX         0x154
  		>;
  	};
  
@@ -846,7 +844,7 @@ index 26435ca5e171..fc6129eb5937 100644
  		>;
  	};
  
-@@ -1082,11 +841,6 @@ MX8MP_IOMUXC_HDMI_DDC_SDA__HDMIMIX_HDMI_SDA	0x400001c2
+@@ -1082,11 +840,6 @@ MX8MP_IOMUXC_HDMI_DDC_SDA__HDMIMIX_HDMI_SDA	0x400001c2
  			MX8MP_IOMUXC_HDMI_HPD__HDMIMIX_HDMI_HPD		0x40000010
  			MX8MP_IOMUXC_HDMI_CEC__HDMIMIX_HDMI_CEC		0x40000010
  
@@ -858,7 +856,7 @@ index 26435ca5e171..fc6129eb5937 100644
  		>;
  	};
  
-@@ -1117,40 +871,18 @@ MX8MP_IOMUXC_I2C3_SDA__I2C3_SDA		0x400001c2
+@@ -1117,40 +870,18 @@ MX8MP_IOMUXC_I2C3_SDA__I2C3_SDA		0x400001c2
  		>;
  	};
  
@@ -904,7 +902,7 @@ index 26435ca5e171..fc6129eb5937 100644
  		>;
  	};
  
-@@ -1160,101 +892,61 @@ MX8MP_IOMUXC_GPIO1_IO03__GPIO1_IO03	0x000001c0
+@@ -1160,101 +891,61 @@ MX8MP_IOMUXC_GPIO1_IO03__GPIO1_IO03	0x000001c0
  		>;
  	};
  
@@ -1033,7 +1031,7 @@ index 26435ca5e171..fc6129eb5937 100644
  		>;
  	};
  
-@@ -1354,21 +1046,10 @@ MX8MP_IOMUXC_GPIO1_IO02__WDOG1_WDOG_B	0x166
+@@ -1354,21 +1045,10 @@ MX8MP_IOMUXC_GPIO1_IO02__WDOG1_WDOG_B	0x166
  		>;
  	};
  
@@ -1058,7 +1056,7 @@ index 26435ca5e171..fc6129eb5937 100644
  		>;
  	};
  };
-@@ -1405,57 +1086,3 @@ &mix_gpu_ml {
+@@ -1405,57 +1085,3 @@ &mix_gpu_ml {
  	status = "okay";
  };
  
@@ -1153,7 +1151,7 @@ index 97f186ef4838..b46c4deff3b7 100644
  					type = "critical";
  				};
 diff --git a/arch/arm64/configs/imx_v8_defconfig b/arch/arm64/configs/imx_v8_defconfig
-index 0e9e6dfe63d0..b96b0e32cdd0 100644
+index 0e9e6dfe63d0..7cc0f7ea0af3 100644
 --- a/arch/arm64/configs/imx_v8_defconfig
 +++ b/arch/arm64/configs/imx_v8_defconfig
 @@ -5,7 +5,7 @@ CONFIG_NO_HZ_IDLE=y
@@ -1178,7 +1176,16 @@ index 0e9e6dfe63d0..b96b0e32cdd0 100644
  CONFIG_BT=y
  CONFIG_BT_RFCOMM=y
  CONFIG_BT_RFCOMM_TTY=y
-@@ -1153,3 +1157,10 @@ CONFIG_CORESIGHT_STM=m
+@@ -406,7 +410,7 @@ CONFIG_IPMI_HANDLER=m
+ CONFIG_IPMI_DEVICE_INTERFACE=m
+ CONFIG_IPMI_SI=m
+ CONFIG_TCG_TPM=y
+-CONFIG_TCG_TIS_I2C_INFINEON=y
++# CONFIG_TCG_TIS_I2C_INFINEON is not set
+ CONFIG_I2C_CHARDEV=y
+ CONFIG_I2C_MUX=y
+ CONFIG_I2C_MUX_GPIO=y
+@@ -1153,3 +1157,12 @@ CONFIG_CORESIGHT_STM=m
  CONFIG_CORESIGHT_CPU_DEBUG=m
  CONFIG_CORESIGHT_CTI=m
  CONFIG_MEMTEST=y
@@ -1189,6 +1196,8 @@ index 0e9e6dfe63d0..b96b0e32cdd0 100644
 +CONFIG_FRAM_FM25=y
 +CONFIG_RTC_DRV_HT1382=y
 +CONFIG_ADVMSP430_WATCHDOG=y
++CONFIG_TCG_TIS_I2C=y
++
 -- 
 2.43.0
 
