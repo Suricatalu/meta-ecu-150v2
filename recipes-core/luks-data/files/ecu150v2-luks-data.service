@@ -1,0 +1,13 @@
+[Unit]
+Description=Unlock and mount the encrypted data partition
+DefaultDependencies=no
+After=local-fs.target systemd-udevd.service
+ConditionPathExists=/proc/cmdline
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/ecu150v2-luks-data.sh
+
+[Install]
+WantedBy=multi-user.target
