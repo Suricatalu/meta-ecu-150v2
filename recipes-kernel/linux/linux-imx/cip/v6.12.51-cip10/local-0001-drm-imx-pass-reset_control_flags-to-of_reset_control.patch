@@ -1,0 +1,48 @@
+From ecc416b163406ecf06816e52588b47a9a34ba28e Mon Sep 17 00:00:00 2001
+From: "suricata.lu" <suricata.lu@gmail.com>
+Date: Thu, 29 Oct 2026 03:41:14 +0800
+Subject: [PATCH] drm/imx: pass reset_control_flags to
+ of_reset_control_array_get()
+
+CIP backported "reset: replace boolean parameters with flags parameter"
+(v6.12.51-cip10, patch 0255), which changed of_reset_control_array_get()
+to take an enum reset_control_flags instead of the shared, optional and
+acquired booleans. The NXP-only LCDIF and MIPI DSIM drivers still pass
+(false, false, true) and fail to build.
+
+Pass RESET_CONTROL_EXCLUSIVE, which is the same request, as NXP does in
+lf-6.18.y (f3104188306f "drm/imx: Replace reset flow for LCDIF" and
+33c4f9c0aefe "drm/imx: Replace reset flow for DSIM").
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ drivers/gpu/drm/imx/sec_mipi_dsim-imx.c | 2 +-
+ drivers/gpu/imx/lcdif/lcdif-common.c    | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/imx/sec_mipi_dsim-imx.c b/drivers/gpu/drm/imx/sec_mipi_dsim-imx.c
+index 0aea8beb8fe2..9626c9e893b6 100644
+--- a/drivers/gpu/drm/imx/sec_mipi_dsim-imx.c
++++ b/drivers/gpu/drm/imx/sec_mipi_dsim-imx.c
+@@ -334,7 +334,7 @@ static int sec_dsim_of_parse_resets(struct imx_sec_dsim_device *dsim)
+ 		if (!compat)
+ 			continue;
+ 
+-		rstc = of_reset_control_array_get(child, false, false, true);
++		rstc = of_reset_control_array_get(child, RESET_CONTROL_EXCLUSIVE);
+ 		if (IS_ERR(rstc))
+ 			continue;
+ 
+diff --git a/drivers/gpu/imx/lcdif/lcdif-common.c b/drivers/gpu/imx/lcdif/lcdif-common.c
+index 5e7955057077..aca8eb2ac225 100644
+--- a/drivers/gpu/imx/lcdif/lcdif-common.c
++++ b/drivers/gpu/imx/lcdif/lcdif-common.c
+@@ -680,7 +680,7 @@ static int lcdif_of_parse_resets(struct lcdif_soc *lcdif)
+ 		if (!compat)
+ 			continue;
+ 
+-		rstc = of_reset_control_array_get(child, false, false, true);
++		rstc = of_reset_control_array_get(child, RESET_CONTROL_EXCLUSIVE);
+ 		if (IS_ERR(rstc))
+ 			continue;
+ 

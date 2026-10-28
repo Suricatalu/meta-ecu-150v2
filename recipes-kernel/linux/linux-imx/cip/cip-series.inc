@@ -1,0 +1,4 @@
+CIP_BATCHES = " \
+    v6.12.51-cip10 \
+"
+LINUX_VERSION:ecu150v2 = "6.12.51"
