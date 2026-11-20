@@ -1,0 +1,128 @@
+From e403c9d33c31b0a0f6efaa4b4f662fa776dc0f0a Mon Sep 17 00:00:00 2001
+From: "suricata.lu" <suricata.lu@gmail.com>
+Date: Tue, 17 Nov 2026 15:52:39 +0800
+Subject: [PATCH] arm64: dts: imx8mp-evk: enable the Cortex-M7 for ECU-150v2
+
+Reserve the M7 private DDR and the RPMsg shared memory, add the
+imx8mp-cm7 remoteproc node, and disable UART4 and I2C3, which the
+U-Boot mcu_rdc start-config makes M7-only.
+
+Upstream-Status: Inappropriate [embedded board port]
+---
+ arch/arm64/boot/dts/freescale/imx8mp-evk.dts | 103 +++++++++++++++++++
+ 1 file changed, 103 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/freescale/imx8mp-evk.dts b/arch/arm64/boot/dts/freescale/imx8mp-evk.dts
+index 827bdfa24a9e..6c1e55286d02 100644
+--- a/arch/arm64/boot/dts/freescale/imx8mp-evk.dts
++++ b/arch/arm64/boot/dts/freescale/imx8mp-evk.dts
+@@ -1085,3 +1085,106 @@ &mix_gpu_ml {
+ 	status = "okay";
+ };
+ 
++
++/* Cortex-M7 support (meta-ecu-150v2 branch walnascar-m7).
++ * Reserved memory and the remoteproc node for the M7, and the peripherals
++ * the M7 takes over. The &uart4 and &i2c3 blocks below come after the
++ * earlier blocks in imx8mp-evk.dts, so their status overrides "okay".
++ */
++/ {
++	reserved-memory {
++		#address-cells = <2>;
++		#size-cells = <2>;
++		ranges;
++
++		/*
++		 * M7 private DDR: code/data of DDR-linked firmware and the
++		 * ".ncache" section of TCM-linked firmware. Must match the
++		 * "mcu_rdc" DDR region in U-Boot (M7-only while the M7 runs).
++		 */
++		m7_reserved: m7@80000000 {
++			reg = <0 0x80000000 0 0x1000000>;
++			no-map;
++		};
++
++		/*
++		 * The node names below are matched by name in
++		 * drivers/remoteproc/imx_rproc.c: "vdev0buffer" and the
++		 * "vdev*" prefix are handled by the virtio code, and
++		 * "rsc-table" is used as the resource table in attach mode.
++		 * Do not rename them.
++		 */
++		m7_vdev0vring0: vdev0vring0@55000000 {
++			reg = <0 0x55000000 0 0x8000>;
++			no-map;
++		};
++
++		m7_vdev0vring1: vdev0vring1@55008000 {
++			reg = <0 0x55008000 0 0x8000>;
++			no-map;
++		};
++
++		m7_rsc_table: rsc-table@550ff000 {
++			reg = <0 0x550ff000 0 0x1000>;
++			no-map;
++		};
++
++		m7_vdev0buffer: vdev0buffer@55400000 {
++			compatible = "shared-dma-pool";
++			reg = <0 0x55400000 0 0x100000>;
++			no-map;
++		};
++	};
++
++	/*
++	 * Linux remoteproc device for the M7 (driver: imx_rproc,
++	 * CONFIG_IMX_REMOTEPROC=y). It starts/stops the M7 through the ATF
++	 * SIP call 0xC2000005 and connects RPMsg to MU1.
++	 */
++	m7: imx8mp-cm7 {
++		compatible = "fsl,imx8mp-cm7";
++		/*
++		 * M7 root clock "m7_core" (CCM target root register at
++		 * 0x30388080). imx_rproc takes the first clock and keeps it
++		 * enabled, so clk_disable_unused() at the end of Linux boot
++		 * does not gate it. It must be IMX8MP_CLK_M7_CORE: the
++		 * clk-imx8mp driver does not register IMX8MP_CLK_M7_DIV (used
++		 * by the NXP rpmsg example DTS), and that ID silently gives
++		 * imx_rproc no clock. No clock-names: imx_rproc does not look
++		 * this clock up by name.
++		 */
++		clocks = <&clk IMX8MP_CLK_M7_CORE>;
++		/* mbox cells: <type channel>; type 0 = TX, 1 = RX, 3 = RX doorbell */
++		mbox-names = "tx", "rx", "rxdb";
++		mboxes = <&mu 0 1>, <&mu 1 1>, <&mu 3 1>;
++		memory-region = <&m7_vdev0buffer>, <&m7_vdev0vring0>,
++				<&m7_vdev0vring1>, <&m7_rsc_table>,
++				<&m7_reserved>;
++		/* wait after start so the M7 can set up its RPMsg side first */
++		fsl,startup-delay-ms = <500>;
++		/*
++		 * Uncomment to let Linux load and start the M7 at boot with
++		 * /lib/firmware/rproc-imx-rproc-fw (the default name of this
++		 * driver). Not needed when U-Boot already started the M7.
++		 */
++		/* fsl,auto-boot; */
++		status = "okay";
++	};
++};
++
++/*
++ * UART4: M7 debug console of the NXP SDK firmware (pads UART4_RXD /
++ * UART4_TXD). Also made M7-only by the U-Boot "mcu_rdc" start-config.
++ * Linux loses /dev/ttymxc3.
++ */
++&uart4 {
++	status = "disabled";
++};
++
++/*
++ * I2C3: made M7-only by the U-Boot "mcu_rdc" start-config.
++ * ECU-150v2 has no device on this bus.
++ */
++&i2c3 {
++	status = "disabled";
++};
+-- 
+2.43.0
+
