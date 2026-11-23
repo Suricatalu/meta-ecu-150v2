@@ -4,10 +4,7 @@ SRC_URI:append:ecu150v2 = " \
             file://0001-Port-ECU-150v2-to-linux-imx-6.12-on-deviceTree.patch \
             file://0002-Drivers-code-created-and-modified.patch \
             file://0003-Upstream-driver-code-modifications.patch \
-            file://rauc.cfg \
             "
-
-DELTA_KERNEL_DEFCONFIG:append:ecu150v2 = " rauc.cfg"
 
 # ECU-150v2 patches imx8mp-evk.dts heavily (camera/audio/LVDS nodes removed),
 # which breaks every downstream NXP EVK overlay/variant DTB that #include's it.

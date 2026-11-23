@@ -1,8 +1,7 @@
 # ═════════════════════════════════════════════════════════════════════
 # ECU150v2 HABv4 Secure Boot — single source of truth.
 # Toggle by setting SECURE_BOOT_ENABLED = "1" in local.conf — one line,
-# when the build host follows the key-dir convention below (mirrors the
-# existing RAUC_KEYS_DIR pattern):
+# when the build host follows the key-dir convention below:
 #   ~/.config/cst                  symlink -> actual CST install (tool only,
 #                                  read-only, shareable across products)
 #   ~/.config/hab-keys-ecu150v2/   per-product keys/ + crts/ + csf_hab4.cfg
@@ -15,9 +14,19 @@
 # REMOVING them here (:remove always beats :append, parse order irrelevant).
 # ═════════════════════════════════════════════════════════════════════
 
-# One knob signs the whole chain (bootloader + kernel). There is no
-# kernel sub-toggle on purpose: NXP U-Boot's booti authenticates the
-# kernel automatically whenever CONFIG_IMX_HAB is set.
+# One knob signs imx-boot: the single boot file that imx-mkimage packs
+# from SPL, DDR firmware, TF-A, OP-TEE and U-Boot. The kernel is never
+# signed here: this branch boots Canonical's Ubuntu kernel, which
+# carries a UEFI signature only.
+#
+# The knob also turns on CONFIG_IMX_HAB in U-Boot, from two places:
+#   - hab.cfg in this layer (see recipes-bsp/u-boot/u-boot-imx_%.bbappend)
+#   - meta-secure-boot's u-boot-imx bbappend, which appends it to the
+#     U-Boot .config whenever any of the three signing MACHINE_FEATURES
+#     is present
+# With CONFIG_IMX_HAB, booti authenticates the kernel before starting
+# it. On a HAB-closed board with this knob on, booti therefore rejects
+# Canonical's kernel, which has no HAB signature.
 SECURE_BOOT_ENABLED ?= "0"
 
 # Tool vs keys are deliberately two variables: the tool is public,
@@ -27,10 +36,21 @@ SECURE_BOOT_ENABLED ?= "0"
 SIG_TOOL_PATH ?= "${HOME}/.config/cst"
 SIG_DATA_PATH ?= "${HOME}/.config/hab-keys-ecu150v2"
 
-# Neutralise the layer.conf force-append unless explicitly enabled.
-# u-boot-imx-signature is never used on 8M (imx-boot-signature covers it).
-MACHINE_FEATURES:remove = "u-boot-imx-signature"
-MACHINE_FEATURES:remove = "${@'' if d.getVar('SECURE_BOOT_ENABLED') == '1' else 'imx-boot-signature linux-imx-signature'}"
+# Neutralise the layer.conf force-append.
+#
+# u-boot-imx-signature: always removed. Its recipe supports only
+# i.MX 6/7, whose Boot ROM loads U-Boot directly; on i.MX 8M the Boot
+# ROM loads imx-boot, which imx-boot-signature signs as a whole. It
+# must still be removed, because meta-secure-boot's u-boot-imx bbappend
+# enables CONFIG_IMX_HAB while ANY signing feature remains; leaving it
+# in would turn HAB on even with the knob off.
+#
+# linux-imx-signature: always removed. It signs the Yocto kernel image,
+# which this branch does not ship.
+#
+# imx-boot-signature: kept only when the knob is on.
+MACHINE_FEATURES:remove = "u-boot-imx-signature linux-imx-signature"
+MACHINE_FEATURES:remove = "${@'' if d.getVar('SECURE_BOOT_ENABLED') == '1' else 'imx-boot-signature'}"
 
 # Fail fast at parse time with actionable messages. NXP's own checks come
 # too late (mid-build).

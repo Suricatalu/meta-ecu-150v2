@@ -12,9 +12,11 @@
 #   by hand -- including meta-ecu150v2 itself -- is silently dropped. Re-run
 #   this script after any re-run of imx-setup-release.sh.
 #
-# meta-secure-boot is REQUIRED, not optional: meta-ecu150v2 carries a
-# linux-imx-signature bbappend, and a bbappend whose target recipe is absent
-# makes bitbake fail outright (see docs/0068_add_secure_boot).
+# meta-secure-boot provides imx-boot-signature, which signs imx-boot when
+# SECURE_BOOT_ENABLED = "1" (see conf/include/ecu150v2-secure-boot.inc).
+# It is always added so that enabling secure boot needs only local.conf.
+# Side effect: its imx-boot bbappend makes imx-boot wait for the kernel
+# build (virtual/kernel:do_deploy) even when signing is off.
 
 set -eu
 
@@ -44,7 +46,6 @@ add_layer() {
 echo "ecu150v2-setup: ${BBLAYERS_CONF}"
 
 add_layer meta-ecu-150v2
-add_layer meta-rauc
 add_layer meta-nxp-security-reference-design/meta-secure-boot
 
 echo "ecu150v2-setup: done"
