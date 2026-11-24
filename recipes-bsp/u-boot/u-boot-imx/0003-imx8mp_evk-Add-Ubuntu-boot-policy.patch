@@ -1,0 +1,197 @@
+From 2e44dfbe3c1df58198b504f001c491a9520adae2 Mon Sep 17 00:00:00 2001
+From: "suricata.lu" <suricata.lu@gmail.com>
+Date: Tue, 26 May 2026 16:19:08 +0800
+Subject: [PATCH] imx8mp_evk: Add Ubuntu boot policy
+
+ECU-150v2 boots Canonical's Ubuntu image from the SD card or the eMMC.
+
+- board_late_init(): first pulse the MSP430 WDI input (pad SAI1_MCLK,
+  GPIO4_IO20) low for 200 ms, then high. After a WDOG_B cold reset the
+  MSP430 counts down from 60 s and resets the whole board when it
+  reaches zero; one low-to-high edge stops it. Doing it before autoboot
+  keeps the board up while it sits at the U-Boot prompt as well.
+- board_late_init(): force bootcmd = "ecu150v2_ubuntu_boot" on every
+  boot, so a bootcmd saved with saveenv cannot replace it.
+- board_mmc_get_env_dev(): return the U-Boot mmc number of the boot
+  device (SD card = mmc 1, eMMC = mmc 0) instead of the Boot ROM number
+  (SD card = 1, eMMC = 2). The ECU-150v2 device tree sets
+  mmc0 = USDHC3, so U-Boot has no mmc 2. With the Boot ROM number, a
+  boot from the eMMC pointed the environment, mmcdev and the fastboot
+  default device at that missing mmc 2. A boot from the SD card is
+  unchanged.
+- ecu150v2_ubuntu_boot: load boot.scr from partition 1 of the device
+  the board booted from. imx-boot and the Ubuntu image are always on
+  the same device, so the other device is not searched. On a hit, set
+  mmcdev and opteeoverlay=yes and source it; boot.scr loads the kernel,
+  initrd and dtb from partition 2 and runs booti. With no boot.scr, or
+  when the script returns, stay at the prompt.
+- sr_ir_v2_cmd is not run: it would set opteeoverlay=no, and the dtb it
+  copies is not needed because boot.scr loads Ubuntu's own dtb.
+
+Upstream-Status: Inappropriate [not-applicable]
+---
+ board/freescale/imx8mp_evk/imx8mp_evk.c | 130 ++++++++++++++++++++++++
+ 1 file changed, 130 insertions(+)
+
+diff --git a/board/freescale/imx8mp_evk/imx8mp_evk.c b/board/freescale/imx8mp_evk/imx8mp_evk.c
+index 306c8377edd..15a7b72d9f7 100644
+--- a/board/freescale/imx8mp_evk/imx8mp_evk.c
++++ b/board/freescale/imx8mp_evk/imx8mp_evk.c
+@@ -31,6 +31,7 @@
+ #include <fuse.h>
+ #include <i2c.h>
+ #include <mmc.h>
++#include <command.h>
+ 
+ DECLARE_GLOBAL_DATA_PTR;
+ 
+@@ -660,6 +661,122 @@ static void system_reset_gpio(void)
+ 	gpio_set_output(M2B_RESET_GPIO, 1);
+ }
+ 
++/* ========== ECU-150v2: MSP430 Board Watchdog ========== */
++/*
++ * The MSP430 on the board resets the whole board through PMIC_RST_B when
++ * its countdown reaches zero. The countdown starts after a SoC cold reset
++ * through WDOG_B (Linux reboot, U-Boot "reset"), first from 60 s. One
++ * low-to-high edge on its WDI input stops it.
++ *
++ * WDI is wired to pad SAI1_MCLK (GPIO4_IO20). The pad gets the same
++ * setting as the Linux pinctrl: GPIO mux, pull-up enabled (0x140). The
++ * output is left high, and the Linux GPIO driver keeps the output value
++ * when it probes, so the countdown stays stopped in Linux as well.
++ */
++#define ECU_MSP430_WDI_GPIO		IMX_GPIO_NR(4, 20)
++#define ECU_MSP430_WDI_LOW_MS		200 /* same as the Advantech Linux driver */
++#define ECU_MSP430_WDI_PAD_CTRL		(PAD_CTL_PE | PAD_CTL_PUE)
++
++static const iomux_v3_cfg_t ecu_msp430_wdi_pads[] = {
++	MX8MP_PAD_SAI1_MCLK__GPIO4_IO20 | MUX_PAD_CTRL(ECU_MSP430_WDI_PAD_CTRL),
++};
++
++static void ecu_msp430_wdi_pulse(void)
++{
++	imx_iomux_v3_setup_multiple_pads(ecu_msp430_wdi_pads,
++					 ARRAY_SIZE(ecu_msp430_wdi_pads));
++	gpio_set_output(ECU_MSP430_WDI_GPIO, 0);
++	mdelay(ECU_MSP430_WDI_LOW_MS);
++	gpio_set_output(ECU_MSP430_WDI_GPIO, 1);
++	printf("ECU-150v2: MSP430 WDI pulsed (low %d ms, then high)\n",
++	       ECU_MSP430_WDI_LOW_MS);
++}
++
++/* ========== ECU-150v2: mmc Number of the Boot Device ========== */
++/*
++ * mmc_get_env_dev() (arch/arm/mach-imx/mmc_env.c) reads the boot device
++ * from the Boot ROM, which numbers it by controller instance: 1 for the
++ * SD card (USDHC2), 2 for the eMMC (USDHC3). It passes that number through
++ * this hook. NXP's default hook returns it unchanged, which fits the NXP
++ * EVK device tree (aliases mmc1 = USDHC2, mmc2 = USDHC3). The ECU-150v2
++ * device tree sets mmc0 = USDHC3 and mmc1 = USDHC2 instead, the same as
++ * its Linux device tree, so in U-Boot the eMMC is mmc 0 and there is no
++ * mmc 2.
++ *
++ * Returning the U-Boot mmc number here makes every user of
++ * mmc_get_env_dev() open the device the board booted from: the
++ * environment (env/mmc.c), mmcdev and mmcroot set by
++ * board_late_mmc_env_init(), the fastboot default device and
++ * ecu150v2_ubuntu_boot below. When the board boots from neither the SD
++ * card nor the eMMC (for example over USB with uuu), mmc_get_env_dev()
++ * does not call this hook.
++ */
++int board_mmc_get_env_dev(int devno)
++{
++	switch (devno) {
++	case 1:
++		return 1;	/* SD card */
++	case 2:
++		return 0;	/* eMMC */
++	default:
++		return devno;	/* USDHC1, disabled on ECU-150v2 */
++	}
++}
++
++/* ========== ECU-150v2: Ubuntu Boot Policy ========== */
++/*
++ * Boot Canonical's Ubuntu image from the device the board booted from,
++ * the SD card or the eMMC. imx-boot and the Ubuntu image are always on the
++ * same device, so the other device is never searched. The image carries
++ * boot.scr on partition 1 (FAT). boot.scr loads the kernel, initrd and dtb
++ * from partition 2 (ext4) and runs booti, so the kernel file names, load
++ * addresses and bootargs stay with the image, not here.
++ *
++ * Interface with boot.scr: before sourcing it, this command sets
++ *   mmcdev       - U-Boot mmc number of the boot device
++ *   opteeoverlay - "yes"
++ * sr_ir_v2_cmd is not run: it would set opteeoverlay to "no", and the dtb
++ * it copies is not needed because boot.scr loads Ubuntu's own dtb.
++ */
++static int do_ecu150v2_ubuntu_boot(struct cmd_tbl *cmdtp, int flag,
++				   int argc, char *const argv[])
++{
++	/* U-Boot mmc number of the boot device, see board_mmc_get_env_dev() */
++	int dev = mmc_get_env_dev();
++	char cmd[64];
++
++	if (dev != 0 && dev != 1) {
++		printf("BOOT: mmc %d is neither the SD card nor the eMMC, staying at the U-Boot prompt\n",
++		       dev);
++		return CMD_RET_FAILURE;
++	}
++
++	printf("BOOT: looking for boot.scr on mmc %d partition 1\n", dev);
++	snprintf(cmd, sizeof(cmd), "load mmc %d:1 ${scriptaddr} boot.scr", dev);
++	if (run_command(cmd, 0)) {
++		printf("BOOT: no boot.scr on mmc %d, staying at the U-Boot prompt\n",
++		       dev);
++		return CMD_RET_FAILURE;
++	}
++
++	printf("BOOT: boot.scr found on mmc %d, sourcing it\n", dev);
++	env_set_ulong("mmcdev", dev);
++	env_set("opteeoverlay", "yes");
++	(void)run_command("source ${scriptaddr}", 0);
++
++	printf("BOOT: boot.scr on mmc %d returned without booting, staying at the U-Boot prompt\n",
++	       dev);
++	return CMD_RET_FAILURE;
++}
++
++U_BOOT_CMD(
++	ecu150v2_ubuntu_boot, 1, 0, do_ecu150v2_ubuntu_boot,
++	"Boot Ubuntu on ECU-150v2 through boot.scr",
++	"(no args) - load boot.scr from partition 1 of the mmc device the\n"
++	"           board booted from (SD card or eMMC); set mmcdev and\n"
++	"           opteeoverlay=yes, then source it."
++);
++
+ /* ========== ECU-150v2: EEPROM MAC Address ========== */
+ static int ecu_setup_mac_from_eeprom(void)
+ {
+@@ -713,6 +830,12 @@ static int ecu_setup_mac_from_eeprom(void)
+ 
+ int board_late_init(void)
+ {
++	/*
++	 * First thing, before autoboot: the board stays protected from the
++	 * MSP430 reset even when autoboot is interrupted or finds no boot.scr.
++	 */
++	ecu_msp430_wdi_pulse();
++
+ #if CONFIG_IS_ENABLED(ENV_IS_IN_MMC)
+ 	board_late_mmc_env_init();
+ #endif
+@@ -730,6 +853,13 @@ int board_late_init(void)
+ 	puts("DeviceName is ECU150V2.\n");
+ 	env_set("devicename", "ecu150v2");
+ 
++	/*
++	 * Force bootcmd on every boot. board_late_init() runs before
++	 * main_loop()/autoboot, so a bootcmd saved with saveenv can never
++	 * replace it.
++	 */
++	env_set("bootcmd", "ecu150v2_ubuntu_boot");
++
+ 	return 0;
+ }
+ 
